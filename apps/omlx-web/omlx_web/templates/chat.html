@@ -7039,12 +7039,23 @@
                     renderLive();
                 }
             } else if (data.type === 'transcript.partial') {
-                session.partial = data.text || '';
-                renderLive();
+                // An empty/newly restarted decoder preview must not erase the
+                // last readable transcript. Keep it visible while Stop drains.
+                if (typeof data.text === 'string' && data.text.trim()) {
+                    session.partial = data.text;
+                    if (!session.stopping || !session.stopPreviewText) renderLive();
+                }
             } else if (data.type === 'transcript.done') {
                 if (session.advancedMic && data.audio_bytes !== (session.sentMicBytes || 0)) {
                     this._failMicTranscription(session, stream, chatSession,
                         'Сервер не підтвердив обробку всього аудіобуфера.');
+                    return;
+                }
+                if (!String(data.text ?? '').trim()
+                    && (session.committed || session.partial || session.stopPreviewText || stream.streamingContent)) {
+                    session.partial = session.stopPreviewText || session.partial || stream.streamingContent;
+                    this._failMicTranscription(session, stream, chatSession,
+                        'Фінальна відповідь порожня. Попередню транскрипцію збережено; остаточну обробку не підтверджено.');
                     return;
                 }
                 if (data.visual) { session.visual = data.visual; this.acceptVisualResult?.(data.visual); }
@@ -7195,9 +7206,9 @@
         clearTimeout(session.startupTimeout);
         this.setEngineStatus(session.chatId, {
             text: (session.diarize && session.translate)
-                ? ('Мікрофон підключено. Діаризація та переклад (' + session.targetLanguage + ') оновлюються приблизно кожні 15 с; позначки попередні.')
+                ? ('Мікрофон підключено. Діаризація та переклад (' + session.targetLanguage + '): після паузи 0,6 с або через 8 с мовлення; позначки попередні.')
                 : (session.translate
-                    ? ('Мікрофон підключено. Переклад (' + session.targetLanguage + ') оновлюється приблизно кожні 15 с.')
+                    ? ('Мікрофон підключено. Переклад (' + session.targetLanguage + '): після паузи 0,6 с або через 8 с мовлення.')
                     : (session.diarize
                         ? 'Мікрофон підключено. Діаризація оновлюється приблизно кожні 15 с; позначки мовців попередні.'
                         : 'Мікрофон підключено. Говоріть, потім зробіть паузу близько секунди.')),
@@ -7211,6 +7222,7 @@
         const chatSession = this.getChatSession(session.chatId, true);
         if (session.stopping && !discard) return;
         session.stopping = true;
+        session.stopPreviewText = session.committed + session.partial || stream.streamingContent || '';
         session.phase = 'stopping';
         if (session.visualEnabled) this._stopVisualSampling?.(session);
         session.draining = !discard;
@@ -7268,7 +7280,7 @@
     },
 
     _markMicDiarizationPartial(session) {
-        const text = session.committed || session.partial || '';
+        const text = session.committed || session.stopPreviewText || session.partial || '';
         if (text && !session.incompleteMarked) {
             session.committed = text + '\n\n_Попередній результат: остаточну обробку не завершено._';
             session.partial = '';
@@ -7324,7 +7336,7 @@
     _finalizeMicTranscription(session, stream, chatSession) {
         if (session.finalized) return;
         session.finalized = true;
-        const text = session.committed || stream.streamingContent || '';
+        const text = session.committed || session.stopPreviewText || session.partial || stream.streamingContent || '';
         if (text) {
             chatSession.messages.push({
                 id: stream.targetMessageId || this.newMessageId(),
@@ -7336,7 +7348,12 @@
             });
             this.saveCurrentChat(session.chatId, chatSession.messages,
                 chatSession.model, chatSession.systemPrompt);
-            if (this.currentChatId === session.chatId) this.scheduleEnhanceMessages();
+            if (this.currentChatId === session.chatId) {
+                // Chat history/settings can replace the session array while
+                // recording. Rebind the visible list before clearing the stream.
+                this.messages = chatSession.messages;
+                this.scheduleEnhanceMessages();
+            }
         }
         this._teardownMicSession(session);
         this.resetStreamSession(stream, { preserveFinalContent: true });
@@ -7360,7 +7377,10 @@
         });
         this.saveCurrentChat(session.chatId, chatSession.messages,
             chatSession.model, chatSession.systemPrompt);
-        if (this.currentChatId === session.chatId) this.scheduleEnhanceMessages();
+        if (this.currentChatId === session.chatId) {
+            this.messages = chatSession.messages;
+            this.scheduleEnhanceMessages();
+        }
         this._teardownMicSession(session);
         this.resetStreamSession(stream, { preserveFinalContent: true });
     },

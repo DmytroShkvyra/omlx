@@ -15,6 +15,10 @@ This fork of [jundot/omlx](https://github.com/jundot/omlx) starts from tag
   inference already in progress finishes before the newest accumulated prefix
   is processed. Silent input alone does not repeatedly invoke translation.
   Stop always drains the complete received buffer, including a short final tail.
+  The last readable preview stays visible during finalization; the completed
+  message is rebound to the current chat array before clearing stream state.
+  An empty final response preserves the preview with an explicit incomplete
+  warning instead of silently deleting it or presenting it as final.
 - When translation is unchecked, neither the text translator nor a Nemotron
   translation task runs. Both ordinary ASR and speaker-attributed ASR explicitly
   preserve the original spoken language, including Ukrainian and language switches.

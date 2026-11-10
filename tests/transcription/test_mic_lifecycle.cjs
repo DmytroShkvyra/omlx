@@ -82,6 +82,42 @@ function fixture({hangingModule=false,diarize=false,translate=false,visual=false
  assert.equal(f.app.chats.chat.messages.at(-1).content,'Це український оригінал.');
  console.log('PASS: unchecked translation uses original-language Nemotron ASR and sends translate:false');
 
+ f=fixture({diarize:true});await f.start();await f.event({type:'ready'});f.audio();
+ await f.event({type:'transcript.partial',text:'Повний попередній текст українською.'});
+ await f.event({type:'transcript.partial',text:''});
+ assert.equal(f.app.streams.chat.streamingContent,'Повний попередній текст українською.');
+ const visibleBefore=f.app.messages;
+ f.app.chats.chat.messages=[...f.app.chats.chat.messages];
+ assert.notEqual(f.app.messages,f.app.chats.chat.messages,'Reproduce a detached visible array');
+ f.app.saveCurrentChat=function(_id,messages){this.savedHistory=JSON.parse(JSON.stringify(messages));};
+ await f.app.stopMicTranscription();
+ await f.event({type:'transcript.partial',text:'Новий'});
+ assert.equal(f.app.streams.chat.streamingContent,'Повний попередній текст українською.');
+ await f.event({type:'transcript.done',text:'Повний фінальний текст, включно із завершенням.'});f.assertStopped();
+ assert.equal(f.app.messages.at(-1).content,'Повний фінальний текст, включно із завершенням.');
+ assert.equal(f.app.savedHistory.at(-1).content,f.app.messages.at(-1).content);
+ assert.equal(f.app.messages,f.app.chats.chat.messages);
+ assert.equal(f.app.messages.filter(m=>m.role==='assistant').length,1);
+ console.log('PASS: Stop retains visible preview; final transcript binds to the current message array and persists once');
+
+ f=fixture({diarize:true});await f.start();await f.event({type:'ready'});f.audio();
+ await f.event({type:'transcript.partial',text:'Не губити вже розпізнані слова.'});
+ await f.app.stopMicTranscription();
+ await f.event({type:'transcript.done',text:''});f.assertStopped();
+ assert(f.app.messages.at(-1).content.includes('Не губити вже розпізнані слова.'));
+ assert(f.app.messages.at(-1).content.includes('порожня'));
+ assert(f.app.messages.at(-1).content.includes('остаточну обробку не завершено'));
+ console.log('PASS: empty final result preserves the preview and explicitly marks it incomplete');
+
+ f=fixture({diarize:true});await f.start();await f.event({type:'ready'});f.audio();
+ await f.event({type:'transcript.partial',text:'Source chat preview'});
+ await f.app.stopMicTranscription();
+ f.app.currentChatId='other';f.app.messages=[{role:'user',content:'Other chat'}];
+ await f.event({type:'transcript.done',text:'Source chat final'});f.assertStopped();
+ assert.equal(f.app.messages.at(-1).content,'Other chat');
+ assert.equal(f.app.chats.chat.messages.at(-1).content,'Source chat final');
+ console.log('PASS: background mic finalization cannot overwrite another chat');
+
 
  f=fixture();await f.start();await f.app.stopMicTranscription();f.assertStopped();
  await f.event({type:'ready'});assert.equal(f.app.micSession,null);
