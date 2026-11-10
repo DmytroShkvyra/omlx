@@ -10,6 +10,14 @@ This fork of [jundot/omlx](https://github.com/jundot/omlx) starts from tag
   and a final pass that drains buffered audio when recording stops.
 - Separate text translation, Ukrainian by default, with a model selector and
   user-supplied terminology/context. Speaker IDs remain owned by the server.
+  Live translation is scheduled after 0.6 seconds of silence following speech,
+  or after 8 seconds of continuous speech. Scheduling uses the audio timeline;
+  inference already in progress finishes before the newest accumulated prefix
+  is processed. Silent input alone does not repeatedly invoke translation.
+  Stop always drains the complete received buffer, including a short final tail.
+- When translation is unchecked, neither the text translator nor a Nemotron
+  translation task runs. Both ordinary ASR and speaker-attributed ASR explicitly
+  preserve the original spoken language, including Ukrainian and language switches.
 - Optional video/window context, visible speaker names, deduplicated name
   suggestions and manual label corrections.
 - File-time frame sampling: uniform pairs, codec keyframes, or meaningful

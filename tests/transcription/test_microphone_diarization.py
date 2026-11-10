@@ -14,6 +14,22 @@ ARTIFACTS.mkdir(parents=True, exist_ok=True)
 
 
 class PCMTests(unittest.TestCase):
+    def test_short_filesystem_writes_keep_the_complete_pcm_packet(self):
+        class PartialWriter:
+            def __init__(self, file): self.file=file
+            def write(self, data): return self.file.write(data[:4096])
+            def close(self): self.file.close()
+        with tempfile.TemporaryDirectory(dir=ARTIFACTS) as directory:
+            recording=mic.PCMRecording(directory,1_000_000)
+            recording.file=PartialWriter(recording.file)
+            data=b'\x00\x08'*128000
+            try:
+                recording.append(data)
+                with wave.open(recording.snapshot(recording.size)) as audio:
+                    self.assertEqual(audio.readframes(audio.getnframes()),data)
+            finally:
+                recording.close()
+
     def test_snapshot_is_a_quicktime_readable_pcm_wav_of_exact_prefix(self):
         with tempfile.TemporaryDirectory(dir=ARTIFACTS) as directory:
             recording = mic.PCMRecording(directory, 100000)

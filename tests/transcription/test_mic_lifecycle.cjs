@@ -15,7 +15,7 @@ assert.notEqual(proof.session,raw);
 console.log('REPRODUCED: Alpine',Alpine.version,'wraps raw session; original guard drops ready/done');
 const saved = {setTimeout,clearTimeout,setInterval,clearInterval,now:Date.now};
 function node(){return{connect(){},disconnect(){}};};
-function fixture({hangingModule=false,diarize=false,translate=false,visual=false}={}) {
+function fixture({hangingModule=false,diarize=false,translate=false,visual=false,model=null}={}) {
  let time=1000, counter=0, ws, resolveModule;
  const timers=new Map(),intervals=new Map();
  global.setTimeout=(fn,ms)=>{const id=++counter;timers.set(id,{fn,at:time+ms});return id;};
@@ -45,7 +45,7 @@ function fixture({hangingModule=false,diarize=false,translate=false,visual=false
    visualEnabled:visual,visualScreen:visual?{}:null,visualFrames:[],visionModel:'chosen-vlm',
    _startVisualSampling(s){s.visualSampleStarted=true;},_stopVisualSampling(s){s.visualSampleStarted=false;},
    acceptVisualResult(v){this.visualResult=v;},
-   currentModel:'Nemotron-3.5-Transcribe-30B-A4B-MLX',currentChatId:'chat',uploadAudio:null,counter:0,
+   currentModel:model || ((diarize || translate || visual) ? 'Nemotron-3.5-Transcribe-30B-A4B-MLX' : 'Qwen3-ASR'),currentChatId:'chat',uploadAudio:null,counter:0,
    streams:{chat:{isStreaming:false}},chats:{chat:{messages:[],model:'Nemotron-3.5-Transcribe-30B-A4B-MLX'}},
    micActive(){return this.micSession!==null;},isCurrentChatStreaming(){return this.streams.chat.isStreaming;},
    resolveGatewayModelId:x=>x,getChatSession(){return this.chats.chat;},getStreamSession(){return this.streams.chat;},
@@ -72,6 +72,16 @@ function fixture({hangingModule=false,diarize=false,translate=false,visual=false
  await f.event({type:'transcript.done',text:'Live text'});f.assertStopped();
  assert.equal(f.app.chats.chat.messages.at(-1).content,'Live text');
  console.log('PASS: actual Alpine reactive app receives ready, audio, delta, stop acknowledgement and saves text');
+
+ f=fixture({model:'Nemotron-3.5-Transcribe-30B-A4B-MLX'});await f.start();
+ assert(f.ws.url.endsWith('/realtime/diarize'));
+ const originalStart=JSON.parse(f.ws.sent[0]);
+ assert.equal(originalStart.translate,false);assert.equal(originalStart.diarize,false);
+ await f.event({type:'ready'});f.audio();await f.app.stopMicTranscription();
+ await f.event({type:'transcript.done',text:'Це український оригінал.'});f.assertStopped();
+ assert.equal(f.app.chats.chat.messages.at(-1).content,'Це український оригінал.');
+ console.log('PASS: unchecked translation uses original-language Nemotron ASR and sends translate:false');
+
 
  f=fixture();await f.start();await f.app.stopMicTranscription();f.assertStopped();
  await f.event({type:'ready'});assert.equal(f.app.micSession,null);

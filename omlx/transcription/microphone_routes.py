@@ -28,8 +28,10 @@ async def microphone_diarization(websocket: WebSocket):
         language = start.get('language')
         if language is not None and not isinstance(language, str):
             raise ValueError('language має бути рядком.')
-        diarize = bool(start.get('diarize', True))
-        translate = bool(start.get('translate', False))
+        diarize = start.get('diarize', True)
+        translate = start.get('translate', False)
+        if type(diarize) is not bool or type(translate) is not bool:
+            raise ValueError('diarize та translate мають бути JSON true або false.')
         target_language = str(start.get('target_language', 'Ukrainian') or 'Ukrainian')
         translation_model = start.get('translation_model')
         translation_context = start.get('translation_context', '')

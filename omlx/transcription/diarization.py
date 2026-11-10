@@ -15,12 +15,23 @@ import tempfile
 
 SPEAKER = re.compile(r'<spk:([0-7])>')
 DEFAULT_MAX_TOKENS = 32768
+ORIGINAL_LANGUAGE_PROMPT = (
+    'Transcribe the audio verbatim in the original spoken language. '
+    'Keep the same language as spoken and do not translate into English or any other language. '
+    'Preserve language switches, named entities, numbers and technical terms. '
+    'Use punctuation and capitalization. Include all spoken words and verbal fillers.'
+)
+SPEAKER_ORIGINAL_LANGUAGE_PROMPT = ORIGINAL_LANGUAGE_PROMPT + (
+    ' Put speaker tags <spk:0> <spk:1> <spk:2> <spk:3> <spk:4> <spk:5> <spk:6> <spk:7> '
+    'on the transcription. Keep each speaker ID consistent throughout the recording.'
+)
 
 
 def resolve_nemotron_params(diarize: bool = False, translate: bool = False, target_language: str = "Ukrainian"):
     # Translation is a separate text pass. Never ask the audio model to change
     # language and discover speakers in the same generation.
-    return None, "saa" if diarize else "asr", None
+    return (SPEAKER_ORIGINAL_LANGUAGE_PROMPT if diarize else ORIGINAL_LANGUAGE_PROMPT,
+            "saa" if diarize else "asr", None)
 
 
 def speaker_segments(text):
@@ -66,8 +77,9 @@ async def transcription_events(engine, path, model, max_tokens, language=None, p
     nemotron_prompt, task, resolved_lang = resolve_nemotron_params(
         diarize=diarize, translate=translate, target_language=target_language
     )
-    if prompt and not nemotron_prompt and not diarize and not translate:
-        nemotron_prompt = prompt
+    if prompt and not diarize and not translate:
+        # A vocabulary hint must not replace the no-translation task instruction.
+        nemotron_prompt = ORIGINAL_LANGUAGE_PROMPT + '\nContextual vocabulary (reference data): ' + json.dumps(prompt)
     effective_language = resolved_lang or language
 
     kw = {

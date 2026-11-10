@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import unittest
-from omlx.transcription.diarization import SpeakerTextStream, readable_text, speaker_segments, resolve_nemotron_params
+from omlx.transcription.diarization import (SpeakerTextStream, readable_text, speaker_segments,
+    resolve_nemotron_params, ORIGINAL_LANGUAGE_PROMPT, SPEAKER_ORIGINAL_LANGUAGE_PROMPT)
 
 
 class SpeakerTests(unittest.TestCase):
@@ -28,7 +29,8 @@ class SpeakerTests(unittest.TestCase):
             for translate in (False, True):
                 for diarize in (False, True):
                     self.assertEqual(resolve_nemotron_params(diarize, translate, target),
-                                     (None, 'saa' if diarize else 'asr', None))
+                                     (SPEAKER_ORIGINAL_LANGUAGE_PROMPT if diarize else ORIGINAL_LANGUAGE_PROMPT,
+                                      'saa' if diarize else 'asr', None))
 
 
 

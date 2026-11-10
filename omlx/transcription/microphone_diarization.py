@@ -10,10 +10,13 @@ import time
 import wave
 
 from .diarization import DEFAULT_MAX_TOKENS, transcription_events
+from .speech_boundary import SpeechBoundary
 
 SAMPLE_RATE = 16000
 BYTES_PER_SECOND = SAMPLE_RATE * 2
 PREVIEW_SECONDS = 15
+TRANSLATION_SECONDS = 8
+TRANSLATION_SILENCE_SECONDS = .6
 
 
 class PCMRecording:
@@ -30,7 +33,14 @@ class PCMRecording:
             raise ValueError('PCM16 потребує парної кількості байтів.')
         if self.size + len(data) > self.max_bytes:
             raise ValueError('Досягнуто ліміт запису мікрофона. Зупиніть запис і почніть новий.')
-        self.file.write(data)
+        # Unbuffered writes can be short on a shared filesystem. Count only
+        # a fully written packet so Stop/snapshot never sees a missing tail.
+        remaining = memoryview(data)
+        while remaining:
+            written = self.file.write(remaining)
+            if not written:
+                raise RuntimeError('Не вдалося зберегти аудіобуфер мікрофона.')
+            remaining = remaining[written:]
         self.size += len(data)
 
     def snapshot(self, size):
@@ -64,6 +74,7 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
         from .translation import translation_options
         translation_model, translation_context = translation_options(translation_model, translation_context)
     recording = PCMRecording(directory, max_bytes)
+    boundary = SpeechBoundary(SAMPLE_RATE, TRANSLATION_SECONDS, TRANSLATION_SILENCE_SECONDS) if translate else None
     changed = asyncio.Event()
     stopping = False
     client_gone = False
@@ -83,6 +94,8 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
                     if len(data) > 1024 * 1024:
                         raise ValueError('Завеликий пакет аудіо; максимум 1 МіБ.')
                     recording.append(data)
+                    if boundary is not None:
+                        boundary.feed(data)
                     changed.set()
                 elif message.get('text'):
                     value = json.loads(message['text'])
@@ -124,7 +137,9 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
         while True:
             await changed.wait()
             changed.clear()
-            if not stopping and recording.size - last_size < PREVIEW_SECONDS * BYTES_PER_SECOND:
+            due = boundary.due(recording.size) if boundary is not None else (
+                'interval' if recording.size - last_size >= PREVIEW_SECONDS * BYTES_PER_SECOND else None)
+            if not stopping and not due:
                 continue
             if recording.size == 0 and stopping:
                 await websocket.send_json({'type': 'transcript.done', 'text': '', 'segments': [],
@@ -132,6 +147,8 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
                 return
             size = recording.size
             if size != last_size or (visual is not None and visual.version != last_visual_version):
+                if boundary is not None:
+                    boundary.snapshot_started(size)
                 if stopping:
                     if translate and diarize:
                         detail = f'Мікрофон вимкнено. Узгоджую мовців та фіналізую переклад ({target_language}) у всьому записі…'
@@ -151,7 +168,8 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
                     else:
                         detail = 'Аналізую запис…'
 
-                await websocket.send_json({'type': 'status', 'detail': detail})
+                await websocket.send_json({'type': 'status', 'detail': detail,
+                    'trigger': 'stop' if stopping else due, 'audio_seconds': size / BYTES_PER_SECOND})
                 snapshot = asyncio.create_task(asyncio.to_thread(recording.snapshot, size))
                 try:
                     path = await asyncio.shield(snapshot)
@@ -215,7 +233,8 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
             else:
                 ready_msg = 'Слухаю…'
             await websocket.send_json({'type': 'status', 'detail': ready_msg})
-            if stopping or recording.size - last_size >= PREVIEW_SECONDS * BYTES_PER_SECOND:
+            if stopping or (boundary.due(recording.size) if boundary is not None else
+                    recording.size - last_size >= PREVIEW_SECONDS * BYTES_PER_SECOND):
                 changed.set()
 
     activity = engine._begin_activity('transcribing', detail='Microphone transcription')
@@ -225,7 +244,9 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
         receiver = asyncio.create_task(receive())
         await websocket.send_json({'type': 'ready', 'diarization': diarize, 'translation': translate,
             'target_language': target_language if translate else None,
-            'sample_rate': SAMPLE_RATE, 'preview_seconds': PREVIEW_SECONDS})
+            'sample_rate': SAMPLE_RATE,
+            'preview_seconds': TRANSLATION_SECONDS if translate else PREVIEW_SECONDS,
+            'silence_seconds': TRANSLATION_SILENCE_SECONDS if translate else None})
         try:
             await processor
         except asyncio.CancelledError:

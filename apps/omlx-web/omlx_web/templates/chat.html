@@ -6876,7 +6876,9 @@
         const speakerLabels = {};
         this.visualSpeakerLabels = {}; this.visualResult = null;
         const useVisual = visualEnabled && (!!this.visualScreen || visualFrames.length > 0);
-        const advancedMic = diarize || translate || useVisual;
+        // Nemotron always uses the explicit original-language ASR/SAA route,
+        // including when both checkboxes are off.
+        const advancedMic = diarize || translate || useVisual || /nemotron.*transcribe/i.test(this.currentModel || '');
         let mediaStream, activatedContext;
         try {
             // Safari needs AudioContext activation in the original click gesture,

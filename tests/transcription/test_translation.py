@@ -189,6 +189,29 @@ class TranslationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_translation_off_keeps_ukrainian_and_never_calls_translator(self):
+        source='Сьогодні ми обговорюємо українською мовою план наступної зустрічі.'
+        for diarize in (False,True):
+            audio=types.SimpleNamespace(_sse_event=lambda v:'data: '+json.dumps(v),
+                _cleanup_tempfile=Mock(),_record_audio_request=Mock())
+            engine=Mock()
+            async def stream(*args,**kwargs):
+                self.assertEqual(kwargs['task'],'saa' if diarize else 'asr')
+                self.assertNotEqual(kwargs['task'],'translate')
+                self.assertIn('Keep the same language as spoken and do not translate',kwargs['prompt'])
+                yield {'text':('<spk:0>' if diarize else '')+source}
+            engine.transcribe_stream=stream
+            translator=AsyncMock()
+            with patch.dict(sys.modules,{'omlx.api':types.SimpleNamespace(audio_routes=audio)}),patch(
+                    'omlx.transcription.translation.translate_turns',new=translator):
+                events=[json.loads(e[6:]) async for e in transcription_events(engine,'test.wav','test',100,
+                    diarize=diarize,translate=False,target_language='English')]
+            translator.assert_not_awaited()
+            self.assertEqual(events[-1]['type'],'transcript.text.done')
+            self.assertIn(source,events[-1]['text'])
+            self.assertFalse(events[-1]['translate'])
+            self.assertIsNone(events[-1]['target_language'])
+
     async def run_pipeline(self, translator, **options):
         audio = types.SimpleNamespace(_sse_event=lambda v: 'data: ' + json.dumps(v),
             _cleanup_tempfile=Mock(), _record_audio_request=Mock())
@@ -198,7 +221,7 @@ class PipelineTests(unittest.IsolatedAsyncioTestCase):
         async def stream(*args, **kwargs):
             self.assertEqual(kwargs['task'], 'saa')
             self.assertIsNone(kwargs['language'])
-            self.assertIsNone(kwargs['prompt'])
+            self.assertIn('Keep the same language as spoken and do not translate', kwargs['prompt'])
             try:
                 yield {'text': '<spk:7>Hello.<spk:2>Good morning.'}
             finally:
