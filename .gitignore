@@ -131,3 +131,7 @@ tq_batch_memory.md
 .claude/
 issues.md
 clusterPlan.md
+
+# Fork runtime data and private verification fixtures.
+.state/
+.artifacts/

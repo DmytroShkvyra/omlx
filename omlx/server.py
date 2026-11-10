@@ -830,6 +830,11 @@ try:
     from .api.audio_routes import realtime_router as audio_realtime_router
     from .api.audio_routes import router as audio_router
 
+    # Fork modification: register meeting endpoints on the existing authenticated
+    # routers before FastAPI mounts them. No second server is required.
+    from .transcription import routes as _meeting_diarization  # noqa: F401
+    from .transcription import microphone_routes as _meeting_microphone  # noqa: F401
+
     app.include_router(audio_router, dependencies=[Depends(verify_inference_api_key)])
     # The realtime WebSocket router authenticates in-band (first message):
     # HTTP auth dependencies cannot resolve WebSocket scopes, and browsers cannot set an

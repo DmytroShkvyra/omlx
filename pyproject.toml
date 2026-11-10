@@ -142,6 +142,9 @@ modelscope = [
     "modelscope>=1.28.0",
 ]
 audio = [
+    # Fork modification: frame-change detection and image previews for meetings.
+    "opencv-python-headless>=4.10,<6",
+    "Pillow>=10",
     # mlx-audio from commit (8c244a1, v0.6.3) with tts/stt/sts extras
     "mlx-audio[tts,stt,sts] @ git+https://github.com/Blaizzy/mlx-audio@8c244a1faff44cfa69e3151c195f52a4c1c90be5",
     # Keep dependencies for existing audio models removed from upstream extras.
@@ -243,6 +246,7 @@ include = ["omlx*"]
 
 [tool.setuptools.package-data]
 "omlx" = ["oq_calibration_data.json", "oqe_calibration_data.json"]
+"omlx.transcription" = ["detect_language.swift"]
 "omlx.admin" = ["bench_corpora/*"]
 "omlx_web" = ["templates/**/*.html", "static/**/*", "i18n/*.json"]
 "omlx.eval" = ["data/*.jsonl"]

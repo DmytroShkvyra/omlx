@@ -1,0 +1,40 @@
+const assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
+const page=require('node:fs').readFileSync(require('node:path').join(__dirname,'../../apps/omlx-web/omlx_web/templates/chat.html'),'utf8');
+const a=page.indexOf('    loadTranslationPreferences()'),b=page.indexOf('    async sendTranscriptionMessage()',a);
+const methods=Function('return ({'+page.slice(a,b)+'})')();
+const saved={setInterval,clearInterval,setTimeout,clearTimeout,fetch};
+let tick,intervalCleared=false,fullFrames=0,fetches=0,nextDecision={changed:false},hang=false;
+global.setInterval=(fn,ms)=>{assert.equal(ms,1000);tick=fn;return 77;};
+global.clearInterval=id=>{if(id===77)intervalCleared=true;};
+global.setTimeout=(fn,ms)=>{if(ms===600){queueMicrotask(fn);return null;}return saved.setTimeout(fn,ms);};
+global.clearTimeout=id=>{if(id!=null)saved.clearTimeout(id);};
+global.document={createElement:()=>({getContext:()=>({fillRect(){},drawImage(){}}),toDataURL:()=> 'preview-jpeg'})};
+global.WebSocket={OPEN:1};
+global.fetch=async(url,opts)=>{
+    assert.equal(url,'/v1/audio/visual/change');fetches++;
+    assert.equal(JSON.parse(opts.body).reference,'preview-jpeg');
+    if(hang)return new Promise((resolve,reject)=>opts.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError'))));
+    return Response.json(nextDecision);
+};
+const sent=[];
+const app={...methods,visualScreen:{video:{videoWidth:1280,videoHeight:720}},getApiKey:()=>'',
+    _visualJpeg(){fullFrames++;return 'full-jpeg';},stopVisualScreen(){this.visualScreen=null;}};
+const session={visualEnabled:true,frameSelection:'changes',sentMicBytes:0,ws:{readyState:1,send:v=>sent.push(JSON.parse(v))}};
+const flush=async()=>{for(let i=0;i<20&&session.visualBusy;i++)await new Promise(r=>setImmediate(r));assert(!session.visualBusy);};
+(async()=>{
+    app._startVisualSampling(session);await flush();
+    assert.equal(sent.length,1);assert.equal(sent[0].frame.detection.reason,'initial');
+    session.sentMicBytes=32000;await tick();assert.equal(sent.length,1,'Static preview must not trigger VLM frame');
+    nextDecision={changed:true,reason:'local_change',score:.6};session.sentMicBytes=6*32000;await tick();
+    assert.equal(sent.length,2);assert.equal(sent[1].frame.detection.reason,'local_change');
+    session.sentMicBytes=7*32000;await tick();assert.equal(sent.length,2,'Rate limit must suppress immediate duplicate');
+    session.sentMicBytes=36*32000;await tick();assert.equal(sent.length,3);assert.equal(sent[2].frame.detection.reason,'heartbeat');
+    assert.equal(fetches,3,'Heartbeat must work without another detector request');
+    const before=fullFrames;hang=true;session.sentMicBytes=37*32000;const pending=tick();
+    await Promise.resolve();assert(session.visualDetectorAbort);
+    session.stopping=true;app._stopVisualSampling(session);await pending;
+    assert(intervalCleared);assert.equal(app.visualScreen,null);assert.equal(fullFrames,before,'No new frames after Stop');
+    app.acceptVisualResult({candidates:['Bordiuhov, Andrii [External]','bordiuhov andrii','Bordiuhov,  Andrii External']});
+    assert.equal(app.visualResult.candidates.length,1);
+    console.log('PASS: live change gating, static suppression, rate limit, heartbeat, Stop cancellation and unique speaker options');
+})().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>Object.assign(global,saved));

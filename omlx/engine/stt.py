@@ -130,6 +130,11 @@ def _map_stt_prompt_kwargs(model: Any, prompt: str | None) -> dict[str, str]:
     if prompt is None or not prompt.strip():
         return {}
 
+    # Fork modification: Nemotron exposes its vocabulary/task prompt directly.
+    from ..transcription.runtime import is_nemotron_model
+    if is_nemotron_model(model):
+        return {"prompt": prompt}
+
     import inspect
 
     try:
@@ -654,6 +659,14 @@ class STTEngine(BaseNonStreamingEngine):
 
         def _load_sync():
             ensure_qwen3_asr_audio_quantization()
+            # Fork modification: this conversion quantizes perception layers
+            # as well as the decoder. MLX still requires matching scale weights.
+            try:
+                from mlx_audio.stt.models.nemotron_transcribe.nemotron_transcribe import Model
+            except ImportError:
+                pass
+            else:
+                Model.model_quant_predicate = lambda self, path, module: True
             # load_model returns a single nn.Module, not a tuple
             return _load_model(model_name)
 
@@ -723,6 +736,21 @@ class STTEngine(BaseNonStreamingEngine):
         """
         if self._model is None:
             raise RuntimeError("Engine not started. Call start() first.")
+
+        # Fork modification: independent windows are safe for ASR only. SAA
+        # must retain a single Sortformer state for the complete recording.
+        import time
+        from ..transcription.runtime import is_nemotron_model
+        if is_nemotron_model(self._model) and kwargs.get('task') not in ('saa', 'translate'):
+            parts, detected = [], language
+            started = time.monotonic()
+            async for chunk in self._transcribe_stream_segmented(
+                audio_path, language=language, prompt=prompt, **kwargs
+            ):
+                parts.append(chunk.get('text', ''))
+                detected = chunk.get('language') or detected
+            return {'text': ''.join(parts), 'language': detected,
+                    'segments': [], 'duration': time.monotonic() - started}
 
         import os
         import time
@@ -851,6 +879,19 @@ class STTEngine(BaseNonStreamingEngine):
         """
         if self._model is None:
             raise RuntimeError("Engine not started. Call start() first.")
+
+        # Fork modification: use segmented Nemotron ASR without resetting SAA.
+        from ..transcription.runtime import is_nemotron_model
+        if is_nemotron_model(self._model) and kwargs.get('task') not in ('saa', 'translate'):
+            iterator = self._transcribe_stream_segmented(
+                audio_path, language=language, prompt=prompt, **kwargs
+            )
+            try:
+                async for chunk in iterator:
+                    yield chunk
+            finally:
+                await iterator.aclose()
+            return
 
         if hasattr(self._model, "generate_streaming"):
             # Whisper: generate(stream=True) routes to the experimental

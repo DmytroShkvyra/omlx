@@ -1,3 +1,4 @@
+{# Fork modification: integrated meeting transcription UI and microphone lifecycle fixes. #}
 {% extends "base.html" %}
 
 {% block title %}{{ t('chat.title') }}{% endblock %}
@@ -1305,7 +1306,7 @@
                     class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer hover:bg-surface-muted mb-1"
                     :class="{ 'bg-surface-muted': currentChatId === chat.id }">
                     <i data-lucide="message-square" class="w-4 h-4 flex-shrink-0" style="color: var(--text-muted);"></i>
-                    <button type="button" x-show="isChatStreaming(chat.id)" @click.stop="stopChatStreaming(chat.id)"
+                    <button type="button" x-show="isChatStreaming(chat.id) && micSession?.chatId !== chat.id" @click.stop="stopChatStreaming(chat.id)"
                         class="w-2 h-2 rounded-full flex-shrink-0 animate-pulse p-0 border-0 cursor-pointer"
                         style="background: var(--timeline-accent);" title="{{ t('chat.stop_generating_tooltip') }}"></button>
                     <template x-if="renamingChatId === chat.id">
@@ -1602,7 +1603,7 @@
                             </template>
                             <div x-show="msg.content" class="message-body markdown-content" data-math-pending="true"
                                 :data-math-version="typeof msg.content === 'string' ? String(msg.content.length) : '0'"
-                                x-html="renderMarkdown(msg.content)"></div>
+                                x-html="renderMarkdown(msg._transcription ? formatTranscriptionHeadings(msg.content) : msg.content)"></div>
                         </div>
 
                         <!-- Built-in web tool activity card (search sources / fetched page).
@@ -1816,7 +1817,7 @@
                             </template>
                             <div class="message-body markdown-content" data-math-pending="true"
                                 :data-math-version="typeof msg.content === 'string' ? String(msg.content.length) : '0'"
-                                x-html="renderMarkdown(msg.content)"></div>
+                                x-html="renderMarkdown(msg._transcription ? formatTranscriptionHeadings(msg.content) : msg.content)"></div>
                         </div>
                     </div>
                 </template>
@@ -1841,7 +1842,7 @@
                                 title="{{ t('chat.toggle_info_tooltip') }}">
                                 <i data-lucide="activity" class="w-4 h-4"></i>
                             </button>
-                            <button @click="stopStreaming()"
+                            <button x-show="!micActive()" @click="stopStreaming()"
                                 class="w-7 h-7 flex items-center justify-center rounded-md bg-transparent text-fg-tertiary cursor-pointer transition-all hover:bg-surface-alt hover:text-fg-secondary"
                                 title="{{ t('chat.stop_tooltip') }}">
                                 <i data-lucide="square" class="w-4 h-4"></i>
@@ -2019,6 +2020,134 @@
                                 </button>
                             </div>
                         </template>
+                    </div>
+                    <div x-show="/nemotron.*transcribe/i.test(currentModel || '')" x-cloak
+                        id="nemotron-capture-settings" class="px-3 pt-2 text-xs flex flex-col gap-1.5"
+                        style="color:var(--text-secondary);max-height:min(38vh,320px);min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable">
+                        <div class="flex flex-wrap items-center gap-4">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" x-model="diarizeUpload" :disabled="isCurrentChatStreaming()">
+                                <span>Розрізняти мовців (діаризація)</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" x-model="translateUpload" :disabled="isCurrentChatStreaming()">
+                                <span>Перекладати</span>
+                            </label>
+                            <div x-show="translateUpload" class="flex items-center gap-1.5" x-cloak>
+                                <span style="color:var(--text-tertiary)">Мова:</span>
+                                <select x-model="targetLanguage" :disabled="isCurrentChatStreaming()"
+                                    class="bg-transparent border border-line rounded px-1.5 py-0.5 text-xs outline-none"
+                                    style="color:var(--text-primary); background-color:var(--bg-secondary, #222);">
+                                    <option value="Ukrainian">Українська (за замовчуванням)</option>
+                                    <option value="English">English</option>
+                                    <option value="German">Deutsch</option>
+                                    <option value="Polish">Polski</option>
+                                    <option value="French">Français</option>
+                                    <option value="Spanish">Español</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div x-show="translateUpload" x-cloak class="flex flex-col gap-2"
+                            x-init="loadTranslationPreferences(); loadTranslationModels()">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <label for="translation-model">Модель перекладу:</label>
+                                <select id="translation-model" x-model="translationModel"
+                                    @change="saveTranslationPreferences()" :disabled="isCurrentChatStreaming()"
+                                    class="border border-line rounded px-2 py-1 min-w-0 max-w-full"
+                                    style="color:var(--text-primary);background-color:var(--bg-secondary, #222)">
+                                    <option value="" :selected="!translationModel" x-text="translationDefaultModel ? 'За замовчуванням (' + translationDefaultModel + ')' : 'За замовчуванням на сервері'"></option>
+                                    <template x-if="translationModel && !translationModels.includes(translationModel)">
+                                        <option :value="translationModel" selected x-text="translationModel + ' (збережена)'"></option>
+                                    </template>
+                                    <template x-for="name in translationModels" :key="name">
+                                        <option :value="name" :selected="translationModel === name" x-text="name"></option>
+                                    </template>
+                                </select>
+                                <button type="button" @click="loadTranslationModels()"
+                                    :disabled="translationModelsLoading || isCurrentChatStreaming()"
+                                    class="border border-line rounded px-2 py-1"
+                                    x-text="translationModelsLoading ? 'Завантажую…' : 'Оновити список'"></button>
+                            </div>
+                            <p x-show="translationModelsError" x-text="translationModelsError" role="status" style="color:var(--text-danger)"></p>
+                            <label for="translation-context">Додатковий контекст для перекладу</label>
+                            <textarea id="translation-context" x-model="translationContext" maxlength="6000" rows="3"
+                                @input.debounce.300ms="saveTranslationPreferences()" :disabled="isCurrentChatStreaming()"
+                                placeholder="Тема: розробка ПЗ. PR — pull request; назву продукту Sky залишати без перекладу. Імена: Олена, Daniel."
+                                class="w-full border border-line rounded px-2 py-1.5 text-xs"
+                                style="color:var(--text-primary);background-color:var(--bg-secondary, #222)"></textarea>
+                            <p style="color:var(--text-tertiary)">Контекст уточнює терміни, імена та стиль перекладу. Налаштування зберігаються в цьому браузері й застосовуються до нового запису або файлу.</p>
+                        </div>
+<div class="flex flex-col gap-2 border-t border-line pt-2" x-init="loadVisionModels()">
+    <label class="flex items-center gap-2">
+        <input type="checkbox" x-model="visualEnabled" :disabled="isCurrentChatStreaming()"
+            @change="if (visualEnabled) diarizeUpload = true">
+        <span>Відеоконтекст і підписи мовців</span>
+    </label>
+    <div x-show="visualEnabled" x-cloak class="flex flex-col gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+            <label for="video-frame-selection">Відбір кадрів:</label>
+            <select id="video-frame-selection" x-model="videoFrameSelection" :disabled="isCurrentChatStreaming()"
+                class="border border-line rounded px-2 py-1" style="color:var(--text-primary);background-color:var(--bg-secondary, #222)">
+                <option value="uniform">За часом (пари кадрів)</option>
+                <option value="keyframes">Лише ключові кадри (I)</option>
+                <option value="changes">За змістовними змінами</option>
+            </select>
+        </div>
+        <p x-show="videoFrameSelection === 'keyframes'">До 12 ключових кадрів по всьому файлу. Ключовий кадр не обов’язково означає нову сцену. Для показу вікна цей режим не застосовується.</p>
+        <p x-show="videoFrameSelection === 'changes'">Відео: до 12 важливих змін сцен, слайдів чи областей. Показ вікна: перевірка раз на секунду, аналіз після помітної зміни або контрольне оновлення через 30 с.</p>
+        <div class="flex flex-wrap items-center gap-2">
+            <label for="vision-model">Модель для кадрів:</label>
+            <select id="vision-model" x-model="visionModel" :disabled="isCurrentChatStreaming()"
+                class="border border-line rounded px-2 py-1 max-w-full" style="color:var(--text-primary);background-color:var(--bg-secondary, #222)">
+                <option value="">Qwen3.8-27B (за замовчуванням)</option>
+                <template x-for="name in visionModels" :key="name"><option :value="name" :selected="visionModel === name" x-text="name"></option></template>
+            </select>
+            <button type="button" @click="loadVisionModels()" :disabled="isCurrentChatStreaming()" class="border border-line rounded px-2 py-1">Оновити</button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+            <button type="button" @click="startVisualScreen()" :disabled="isCurrentChatStreaming()" class="border border-line rounded px-2 py-1">Обрати вікно для кадрів</button>
+            <button type="button" x-show="visualScreen" @click="stopVisualScreen()" class="border border-line rounded px-2 py-1">Вимкнути показ екрана</button>
+            <label class="border border-line rounded px-2 py-1 cursor-pointer">Додати кадри
+                <input type="file" accept="image/*" multiple class="hidden" @change="loadVisualFrames($event)" :disabled="isCurrentChatStreaming()">
+            </label>
+            <span x-text="visualFrames.length ? visualFrames.length + ' кадрів додано' : ''"></span>
+            <button type="button" x-show="visualFrames.length" @click="visualFrames = []" :disabled="isCurrentChatStreaming()">Прибрати кадри</button>
+        </div>
+        <p>Для відеофайлу кадри вибираються автоматично. Для мікрофона обери вікно Teams/відео або додай зображення. Лише аудіо працює як раніше.</p>
+        <p x-text="visualStatus" role="status"></p>
+        <details x-show="visualResult" style="min-width:0;flex-shrink:0">
+            <summary style="cursor:pointer;padding:4px 0">Контекст із кадрів</summary>
+            <div class="flex flex-col gap-1" tabindex="0" role="region" aria-label="Контекст із кадрів та підписи мовців"
+                style="max-height:min(26vh,220px);min-height:0;overflow-y:auto;overflow-x:hidden;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-gutter:stable;padding:4px 6px 4px 0">
+            <p style="flex-shrink:0;color:var(--text-tertiary)"
+                x-text="visualResult?.time_basis === 'video' ? 'Мітки часу — від початку відеозапису (год:хв:с.мс).' : visualResult?.time_basis === 'audio_session' ? 'Мітки часу — від початку аудіосесії; позиція зовнішнього відеоплеєра невідома.' : 'Окремі кадри без відомої позиції у відео позначені без часової прив’язки.'"></p>
+            <p x-show="visualResult?.translation_context_scope === 'turn_interval'" style="flex-shrink:0;color:var(--text-tertiary)">Для перекладу контекст добирається за приблизним часовим інтервалом кожної репліки.</p>
+            <p x-show="visualResult?.video_sampling?.mode === 'keyframes'" style="flex-shrink:0;color:var(--text-tertiary)"
+                x-text="'Ключові кадри: вибрано ' + (visualResult?.video_sampling?.selected_times?.length || 0) + ' із ' + (visualResult?.video_sampling?.available || 0)"></p>
+            <p x-show="visualResult?.video_sampling?.mode === 'changes'" style="flex-shrink:0;color:var(--text-tertiary)"
+                x-text="'Детектор: перевірено ' + (visualResult?.video_sampling?.sampled_frames || 0) + ' кадрів; відібрано ' + (visualResult?.video_sampling?.selected_times?.length || 0) + ' із ' + (visualResult?.video_sampling?.candidates || 0) + ' змін'"></p>
+            <p x-text="visualResult?.context || 'Ще немає розпізнаних кадрів.'" style="white-space:pre-wrap;overflow-wrap:anywhere;flex-shrink:0"></p>
+            <template x-for="warning in (visualResult?.warnings || [])"><p x-text="warning" style="color:var(--text-danger)"></p></template>
+            <p>Автоматичні підписи — ймовірні. За потреби уточни, хто відповідає голосу:</p>
+            <datalist id="visual-person-labels"><template x-for="name in (visualResult?.candidates || [])" :key="name"><option :value="name"></option></template></datalist>
+            <template x-for="id in (visualResult?.speaker_ids || [])" :key="id">
+                <label class="flex items-center gap-2" style="flex-shrink:0">
+                    <span x-text="'Мовець ' + (id + 1)"></span>
+                    <input type="text" maxlength="140" list="visual-person-labels" autocomplete="off" x-model="visualSpeakerLabels[id]"
+                        :disabled="isCurrentChatStreaming() && (!micSession?.visualEnabled || micSession?.stopping)"
+                        :placeholder="visualResult?.labels?.[id] || 'Ім’я або опис'" @change="sendVisualLabels()"
+                        class="border border-line rounded px-2 py-1 flex-1 min-w-0"
+                        style="color:var(--text-primary);background-color:var(--bg-secondary, #222)">
+                </label>
+            </template>
+            </div>
+        </details>
+    </div>
+</div>
+
+                        <p class="text-[11px]" style="color:var(--text-tertiary)">
+                            Nemotron · Meeting Workbench. Спочатку транскрипція та мовці, потім локальний переклад із перевіркою мови.
+                        </p>
                     </div>
                     <div x-show="uploadAudio" class="flex flex-wrap gap-2 px-2 pt-2" x-cloak>
                         <div class="relative group flex items-center gap-2 max-w-full px-2.5 py-1.5 rounded-lg border border-line bg-surface-muted text-xs">
@@ -2274,14 +2403,22 @@
                         </div>
 
                         <!-- Realtime microphone (only for realtime-capable ASR models) -->
+                        <span x-show="micActive()" x-cloak class="self-center text-xs" :title="micDeviceLabel" aria-live="polite">
+                            <meter min="0" max="100" :value="micLevel" aria-label="Рівень мікрофона" style="width:52px;vertical-align:middle"></meter>
+                            <span x-text="micSession?.stopping ? 'Завершення…' : micAudioSeconds > 0 ? (micLevel > 1 ? 'Звук' : 'Тиша') + ' · ' + micAudioSeconds.toFixed(1) + ' с' : micSession?.phase === 'connecting' ? 'Підключення…' : 'Запуск аудіо…'"></span>
+                        </span>
                         <span x-show="micActive()" x-cloak class="self-center text-xs font-mono px-1"
                             style="color: var(--text-danger);" x-text="formatRecordingTime(micSeconds)"></span>
                         <button x-show="hasAsrSupport() && isRealtimeSttModel()" @click="toggleMicTranscription()"
                             :disabled="!apiKeySet || !currentModel || (isCurrentChatStreaming() && !micActive()) || uploadAudio"
                             class="composer-icon-btn" :class="{ 'is-open': micActive() }"
-                            :title="window.t(micActive() ? 'chat.stop_recording' : 'chat.record_audio')">
+                            :style="micActive() ? 'width:auto;gap:6px;padding:0 10px' : ''"
+                            :aria-label="micActive() ? 'Зупинити мікрофон' : 'Записати мікрофон'"
+                            :disabled="!!micSession?.stopping"
+                            :title="micSession?.stopping ? 'Обробляю залишок запису…' : window.t(micActive() ? 'chat.stop_recording' : 'chat.record_audio')">
                             <i x-show="!micActive()" data-lucide="mic" class="w-4 h-4"></i>
                             <div x-show="micActive()" class="w-3 h-3 rounded-[2px]" style="background-color: var(--text-danger);"></div>
+                            <span x-show="micActive()" style="font-size:12px">Стоп</span>
                         </button>
 
                         <div class="relative flex-shrink-0">
@@ -2290,7 +2427,7 @@
                                 class="w-9 h-9 ml-1 bg-accent hover:bg-accent-hover disabled:bg-surface-muted rounded-full transition-colors flex items-center justify-center">
                                 <i data-lucide="arrow-up" class="w-4 h-4 text-accent-fg"></i>
                             </button>
-                            <button x-show="isCurrentChatStreaming()" @click="stopStreaming()"
+                            <button x-show="isCurrentChatStreaming() && !micActive()" @click="stopStreaming()"
                                 class="w-9 h-9 ml-1 bg-surface-muted hover:bg-surface rounded-full border border-line transition-colors flex items-center justify-center">
                                 <div class="w-3 h-3 rounded-[2px]" style="background-color: var(--text-danger);"></div>
                             </button>
@@ -2917,7 +3054,28 @@
             uploadAudio: null,           // { id, file: File, filename, size } | null
             // Realtime microphone transcription state
             micSession: null,            // { ws, audioContext, mediaStream, workletNode, chatId } | null
+            diarizeUpload: false,
+            translateUpload: false,
+            targetLanguage: 'Ukrainian',
+            visualEnabled: false,
+            visionModel: '',
+            videoFrameSelection: 'uniform',
+            visionModels: [],
+            visualFrames: [],
+            visualSpeakerLabels: {},
+            visualResult: null,
+            visualStatus: '',
+            visualScreen: null,
+            translationModel: '',
+            translationContext: '',
+            translationModels: [],
+            translationDefaultModel: '',
+            translationModelsLoading: false,
+            translationModelsError: '',
             micSeconds: 0,
+            micLevel: 0,
+            micAudioSeconds: 0,
+            micDeviceLabel: '',
             _micTimerInterval: null,
             realtimeSttMap: {},          // { modelId: bool } from /v1/models/status realtime_stt
             isDragOver: false,           // drag-and-drop state
@@ -6182,11 +6340,278 @@
         }, 0);
     },
 
+    loadTranslationPreferences() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('nemotron-translation-settings') || '{}');
+            if (typeof saved.model === 'string' && saved.model.length <= 512) this.translationModel = saved.model;
+            if (typeof saved.context === 'string' && saved.context.length <= 6000) this.translationContext = saved.context;
+        } catch (e) { /* Storage may be unavailable in private browsing. */ }
+    },
+
+    saveTranslationPreferences() {
+        try {
+            localStorage.setItem('nemotron-translation-settings', JSON.stringify({
+                model: this.translationModel || '', context: this.translationContext || '',
+            }));
+        } catch (e) { /* Current settings still work without persistent storage. */ }
+    },
+
+    async loadTranslationModels() {
+        if (this.translationModelsLoading) return;
+        this.translationModelsLoading = true;
+        this.translationModelsError = '';
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 20000);
+        try {
+            const headers = {};
+            const key = this.getApiKey();
+            if (key) headers.Authorization = 'Bearer ' + key;
+            const response = await fetch('/v1/audio/translation/models', {headers, signal: controller.signal});
+            if (!response.ok) throw new Error('Не вдалося завантажити список моделей перекладу.');
+            const result = await response.json();
+            if (!Array.isArray(result.models)) throw new Error('Некоректний список моделей перекладу.');
+            this.translationModels = result.models.filter(name => typeof name === 'string');
+            this.translationDefaultModel = result.default_model || '';
+        } catch (e) {
+            this.translationModelsError = e.name === 'AbortError'
+                ? 'Сервер перекладу не відповідає. Спробуйте оновити список.'
+                : (e.message || 'Не вдалося завантажити моделі перекладу.');
+        } finally {
+            clearTimeout(timeout);
+            this.translationModelsLoading = false;
+        }
+    },
+
+    async loadVisionModels() {
+        try {
+            const key = this.getApiKey();
+            const response = await fetch('/v1/audio/visual/models', {
+                headers: key ? {Authorization: 'Bearer ' + key} : {}, signal: AbortSignal.timeout(20000),
+            });
+            if (!response.ok) throw new Error('Не вдалося завантажити відеомоделі.');
+            const value = await response.json();
+            this.visionModels = value.models || [];
+        } catch (e) { this.visualStatus = e.message; }
+    },
+
+    _visualJpeg(video) {
+        const width = video.videoWidth || video.naturalWidth;
+        const height = video.videoHeight || video.naturalHeight;
+        if (!width || !height) throw new Error('Кадр ще не готовий.');
+        const scale = Math.min(1, 1280 / width, 720 / height);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+        const value = canvas.toDataURL('image/jpeg', .8);
+        if (value.length > 1200000) throw new Error('Завеликий кадр. Обери менше вікно.');
+        return value;
+    },
+
+    async loadVisualFrames(event) {
+        const files = [...event.target.files].slice(0, 12);
+        const frames = [];
+        try {
+            for (const file of files) {
+                const url = URL.createObjectURL(file);
+                try {
+                    const image = new Image();
+                    image.src = url;
+                    await image.decode();
+                    frames.push({time: null, images: [this._visualJpeg(image)]});
+                } finally { URL.revokeObjectURL(url); }
+            }
+            this.visualFrames = frames;
+            this.visualStatus = 'Кадри готові для наступної транскрипції.';
+        } catch (e) { this.visualStatus = e.message; }
+        event.target.value = '';
+    },
+
+    async startVisualScreen() {
+        try {
+            if (!navigator.mediaDevices?.getDisplayMedia) throw new Error('Цей браузер не підтримує вибір вікна. Додай кадри файлом.');
+            const media = await navigator.mediaDevices.getDisplayMedia({video: true, audio: false});
+            this.stopVisualScreen();
+            const video = document.createElement('video');
+            video.muted = true; video.playsInline = true; video.srcObject = media;
+            this.visualScreen = {media, video};
+            media.getVideoTracks().forEach(track => track.onended = () => this.stopVisualScreen());
+            await video.play();
+            this.visualStatus = 'Вікно обрано. Кадри передаватимуться під час запису за обраним режимом відбору.';
+        } catch (e) { this.stopVisualScreen(); this.visualStatus = e.message; }
+    },
+
+    stopVisualScreen() {
+        const screen = this.visualScreen;
+        this.visualScreen = null;
+        if (screen) {
+            screen.media.getTracks().forEach(track => { track.onended = null; track.stop(); });
+            screen.video.srcObject = null;
+        }
+    },
+
+    _startVisualSampling(session) {
+        if (!session.visualEnabled || !this.visualScreen) return;
+        const changes = session.frameSelection === 'changes';
+        const sample = async () => {
+            if (session.visualBusy || session.stopping || session.finalized || !this.visualScreen) return;
+            session.visualBusy = true;
+            try {
+                let preview, decision;
+                if (changes) {
+                    const video = this.visualScreen.video;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 320; canvas.height = 180;
+                    const context = canvas.getContext('2d');
+                    context.fillStyle = '#000'; context.fillRect(0,0,320,180);
+                    const ratio = Math.min(320/video.videoWidth,180/video.videoHeight);
+                    const width = video.videoWidth*ratio, height = video.videoHeight*ratio;
+                    if (!Number.isFinite(ratio) || !width || !height) return;
+                    context.drawImage(video,(320-width)/2,(180-height)/2,width,height);
+                    preview = canvas.toDataURL('image/jpeg', .65);
+                    session.visualChecked = (session.visualChecked || 0) + 1;
+                    const now = (session.sentMicBytes || 0)/32000;
+                    const elapsed = now-(session.visualLastTime ?? -Infinity);
+                    if (!session.visualReference) decision = {changed:true,reason:'initial',score:1};
+                    else if (elapsed >= 30) decision = {changed:true,reason:'heartbeat',score:0};
+                    else {
+                        const controller = new AbortController();
+                        session.visualDetectorAbort = controller;
+                        const timeout = setTimeout(() => controller.abort(),4000);
+                        try {
+                            const key = this.getApiKey();
+                            const response = await fetch('/v1/audio/visual/change', {
+                                method:'POST',headers:{'Content-Type':'application/json',...(key?{Authorization:'Bearer '+key}:{})},
+                                body:JSON.stringify({reference:session.visualReference,current:preview}),signal:controller.signal,
+                            });
+                            if (!response.ok) throw new Error('Детектор змін не відповів. Контрольні кадри передаватимуться кожні 30 с.');
+                            decision = await response.json();
+                        } finally { clearTimeout(timeout);session.visualDetectorAbort = null; }
+                    }
+                    this.visualStatus = 'Детектор: перевірено ' + session.visualChecked + ' кадрів; передано на аналіз ' + (session.visualSubmitted || 0) + '.';
+                    const minimum = ['object_motion','camera_motion'].includes(decision.reason) ? 10 : 5;
+                    if (!decision.changed || (session.visualReference && elapsed < minimum)) return;
+                    if (session.stopping || session.finalized || !this.visualScreen) return;
+                }
+                const first = this._visualJpeg(this.visualScreen.video);
+                const time = (session.sentMicBytes || 0) / 32000;
+                await new Promise(resolve => setTimeout(resolve, 600));
+                if (session.stopping || session.finalized || !this.visualScreen || session.ws.readyState !== WebSocket.OPEN) return;
+                const second = this._visualJpeg(this.visualScreen.video);
+                session.ws.send(JSON.stringify({type:'visual.frame', frame:{time, images:[first,second],
+                    ...(decision?{detection:{reason:decision.reason,score:decision.score}}:{})}}));
+                if (changes) {
+                    session.visualReference = preview;session.visualLastTime = time;
+                    session.visualSubmitted = (session.visualSubmitted || 0) + 1;
+                }
+            } catch (e) { if (!session.stopping && !session.finalized) this.visualStatus = e.message; }
+            finally { session.visualBusy = false; }
+        };
+        session.visualInterval = setInterval(sample, changes ? 1000 : 10000);
+        sample();
+    },
+
+    _stopVisualSampling(session) {
+        clearInterval(session.visualInterval);
+        session.visualDetectorAbort?.abort();
+        this.stopVisualScreen();
+    },
+
+    acceptVisualResult(value) {
+        if (!value) return;
+        this.visualResult = {...value,candidates:this.uniqueSpeakerLabels(value.candidates || [])};
+        this.visualStatus = 'Контекст із кадрів доповнює початковий контекст перекладу.';
+    },
+
+    uniqueSpeakerLabels(values) {
+        const seen = new Set(), result = [];
+        for (const value of values) {
+            if (typeof value !== 'string') continue;
+            const label = this.displaySpeakerLabel(value);
+            const key = label.normalize('NFKC').toLowerCase().replace(/\s+external$/,'').replace(/[,\s]+/g,' ').trim();
+            if (key && !seen.has(key)) { seen.add(key);result.push(label); }
+        }
+        return result;
+    },
+
+    displaySpeakerLabel(value) {
+        return String(value || '').replace(/[\n\r*_`\[\]<>#]/g, ' ').replace(/\s+/g, ' ')
+            .trim().replace(/ \(ймовірно\)$/, '').slice(0, 140);
+    },
+
+    formatTranscriptionHeadings(text) {
+        if (typeof text !== 'string') return text;
+        return text.replace(/\*\*Мовець \d+ · ([^*\n]+):\*\*/g,
+            (_match, label) => '**' + this.displaySpeakerLabel(label) + ':**');
+    },
+
+    renderSpeakerTurns(segments, labels) {
+        const clock = seconds => {
+            let ms = Math.round(seconds * 1000);
+            const hours = Math.floor(ms / 3600000); ms %= 3600000;
+            const minutes = Math.floor(ms / 60000); ms %= 60000;
+            return String(hours).padStart(2,'0') + ':' + String(minutes).padStart(2,'0') + ':'
+                + String(Math.floor(ms / 1000)).padStart(2,'0') + '.' + String(ms % 1000).padStart(3,'0');
+        };
+        return segments.map(turn => {
+            let heading = '';
+            if (turn.speaker != null) {
+                const label = this.displaySpeakerLabel(labels[turn.speaker] || turn.speaker_label);
+                heading = '**' + (label || 'Мовець ' + (turn.speaker + 1)) + ':** ';
+            }
+            if (turn.start != null && turn.end != null) {
+                heading += '[' + (turn.timing_method === 'native_ctc' ? '' : '≈')
+                    + clock(turn.start) + '–' + clock(turn.end) + '] ';
+            }
+            return heading + turn.text;
+        }).join('\n\n');
+    },
+
+    sendVisualLabels() {
+        const labels = this.visualSpeakerLabels || {};
+        if (this.micSession?.visualEnabled && this.micSession.ws.readyState === WebSocket.OPEN) {
+            this.micSession.ws.send(JSON.stringify({type:'visual.labels',labels}));
+            return;
+        }
+        // Correct the latest completed visual transcription without changing voice IDs.
+        const chat = this.getChatSession(this.currentChatId, true);
+        const message = [...chat.messages].reverse().find(m => m._transcription && m._visual);
+        if (!message) return;
+        if (!message._transcriptionSegments?.length) {
+            const oldTurns = [...message.content.matchAll(/^\*\*Мовець (\d+)(?: · [^*\n]+)?:\*\*\s*/gm)];
+            if (oldTurns.length) message._transcriptionSegments = oldTurns.map((match, i) => ({
+                speaker: Number(match[1])-1,
+                text: message.content.slice(match.index+match[0].length, oldTurns[i+1]?.index ?? message.content.length).trim(),
+            }));
+        }
+        if (Array.isArray(message._transcriptionSegments) && message._transcriptionSegments.length) {
+            message.content = this.renderSpeakerTurns(message._transcriptionSegments, {...message._visual.labels, ...labels});
+        } else message.content = message.content.replace(/\*\*Мовець (\d+)(?: · [^*\n]+)?:\*\*/g, (_all, n) => {
+            const id = Number(n) - 1;
+            const label = labels[id] || message._visual.labels?.[id] || '';
+            const safe = this.displaySpeakerLabel(label);
+            return '**' + (safe || 'Мовець ' + n) + ':**';
+        });
+        this.saveCurrentChat(this.currentChatId, chat.messages, chat.model, chat.systemPrompt);
+        this.scheduleEnhanceMessages();
+    },
+
     async sendTranscriptionMessage() {
         if (!this.uploadAudio || this.micActive()) return;
         if (!this.currentModel || this.isCurrentChatStreaming()) return;
 
         const audio = this.uploadAudio;
+        const diarize = !!this.diarizeUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
+        const translate = !!this.translateUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
+        const targetLanguage = this.targetLanguage || 'Ukrainian';
+        const translationModel = this.translationModel || '';
+        const translationContext = this.translationContext || '';
+        const visualEnabled = !!this.visualEnabled;
+        const visionModel = this.visionModel || '';
+        const visualFrames = this.visualFrames || [];
+        const frameSelection = this.videoFrameSelection || 'uniform';
+        const speakerLabels = {};
+        this.visualSpeakerLabels = {}; this.visualResult = null;
         this.uploadAudio = null;
 
         if (!this.currentChatId) {
@@ -6213,10 +6638,17 @@
             model: sourceModel,
             file: audio.file,
             filename: audio.filename,
+            diarize,
+            translate,
+            targetLanguage,
+            translationModel,
+            translationContext,
+            visualEnabled, visionModel, visualFrames, speakerLabels,
+            frameSelection,
         });
     },
 
-    async streamTranscription({ chatId, model, file, filename }) {
+    async streamTranscription({ chatId, model, file, filename, diarize = false, translate = false, targetLanguage = 'Ukrainian', translationModel = '', translationContext = '', visualEnabled = false, visionModel = '', visualFrames = [], speakerLabels = {}, frameSelection = 'uniform' }) {
         const chatSession = this.getChatSession(chatId, true);
         const stream = this.getStreamSession(chatId, true);
         const requestModel = this.resolveGatewayModelId(model);
@@ -6237,10 +6669,45 @@
         form.append('file', file, filename);
         form.append('model', requestModel);
         form.append('stream', 'true');
+        const visualInput = visualEnabled && (file.type?.startsWith('video/') || /\.(mp4|mkv|mov|m4v|webm|avi)$/i.test(filename) || visualFrames.length);
+        if (visualInput) {
+            form.append('visual_enabled', 'true');
+            form.append('vision_model', visionModel);
+            form.append('frame_selection', frameSelection);
+            // Separate file parts avoid the multipart parser's 1 MiB text-part limit.
+            let imageIndex = 0;
+            const frameIndex = visualFrames.map(frame => ({time: frame.time, images: frame.images.map(uri => {
+                const binary = atob(uri.split(',')[1]);
+                const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+                const index = imageIndex++;
+                form.append('visual_images', new Blob([bytes], {type:'image/jpeg'}), 'frame-' + index + '.jpg');
+                return index;
+            })}));
+            form.append('visual_frames', JSON.stringify(frameIndex));
+            form.append('speaker_labels', JSON.stringify(speakerLabels));
+        }
+        if (diarize || translate || visualInput) {
+            form.append('max_tokens', '32768');
+            form.append('diarize', diarize ? 'true' : 'false');
+            form.append('translate', translate ? 'true' : 'false');
+            form.append('target_language', targetLanguage);
+            if (translate) {
+                form.append('translation_model', translationModel);
+                form.append('translation_context', translationContext);
+            }
+            const statusText = (diarize && translate)
+                ? ('Діаризація та переклад (' + targetLanguage + '): завантажую та аналізую весь запис…')
+                : (translate
+                    ? ('Переклад (' + targetLanguage + '): завантажую та аналізую весь запис…')
+                    : 'Діаризація: завантажую та аналізую весь запис…');
+            this.setEngineStatus(chatId, { text: statusText });
+        }
 
         let finalText = null;
+        let finalVisual = null;
+        let finalSegments = null;
         try {
-            const response = await fetch('/v1/audio/transcriptions', {
+            const response = await fetch((diarize || translate || visualInput) ? '/v1/audio/transcriptions/diarize' : '/v1/audio/transcriptions', {
                 method: 'POST',
                 // No Content-Type header: the browser must set the multipart boundary
                 headers: { 'Authorization': `Bearer ${this.getApiKey()}` },
@@ -6277,7 +6744,16 @@
                     if (line.trim() === 'data: [DONE]') continue;
                     let data;
                     try { data = JSON.parse(line.slice(6)); } catch (e) { continue; }
-                    if (data.type === 'transcript.text.delta' && data.delta) {
+                    if (data.type === 'error' || data.error) {
+                        throw new Error(data.error?.message || data.message || 'Помилка транскрипції');
+                    }
+                    if (data.type === 'transcript.visual') {
+                        this.acceptVisualResult?.(data.visual);
+                    }
+                    if (data.visual) finalVisual = data.visual;
+                    if (data.type === 'transcript.status') {
+                        this.setEngineStatus(chatId, { text: data.message });
+                    } else if (data.type === 'transcript.text.delta' && data.delta) {
                         if (firstDelta) {
                             firstDelta = false;
                             stream.finalContent = true;
@@ -6287,18 +6763,19 @@
                         if (this.currentChatId === chatId) this.scrollToBottom();
                     } else if (data.type === 'transcript.text.done') {
                         finalText = data.text ?? stream.streamingContent;
+                        finalSegments = data.segments || null;
                     }
                 }
             }
-            if (finalText == null && !stream.streamingContent) {
-                throw new Error('Transcription stream ended without a result');
+            if (finalText == null) {
+                throw new Error('Потік завершився без підтвердження повного результату. Повторіть транскрипцію.');
             }
             chatSession.messages.push({
                 id: stream.targetMessageId,
                 role: 'assistant',
                 content: finalText ?? stream.streamingContent,
                 model: requestModel,
-                _transcription: true,
+                _transcription: true, _visual: finalVisual, _transcriptionSegments: finalSegments,
                 _perfVisible: false,
             });
             this.saveCurrentChat(chatId, chatSession.messages, chatSession.model, chatSession.systemPrompt);
@@ -6312,7 +6789,7 @@
                         role: 'assistant',
                         content: stream.streamingContent,
                         model: requestModel,
-                        _transcription: true,
+                        _transcription: true, _visual: finalVisual, _transcriptionSegments: finalSegments,
                         _perfVisible: false,
                     });
                     this.saveCurrentChat(chatId, chatSession.messages, chatSession.model, chatSession.systemPrompt);
@@ -6349,18 +6826,31 @@
         // ~2048-sample chunks before posting to the main thread.
         return `
             class OmlxPcmCapture extends AudioWorkletProcessor {
-                constructor() { super(); this._buf = []; this._len = 0; }
+                constructor() {
+                    super(); this._buf = []; this._len = 0; this._stopped = false;
+                    this.port.onmessage = (event) => {
+                        if (event.data?.type !== 'flush') return;
+                        this._stopped = true;
+                        this._flush();
+                        // Same port: acknowledgement follows every queued PCM message.
+                        this.port.postMessage({type: 'flushed'});
+                    };
+                }
+                _flush() {
+                    if (!this._len) return;
+                    const out = new Float32Array(this._len);
+                    let off = 0;
+                    for (const b of this._buf) { out.set(b, off); off += b.length; }
+                    this.port.postMessage(out, [out.buffer]);
+                    this._buf = []; this._len = 0;
+                }
                 process(inputs) {
                     const ch = inputs[0] && inputs[0][0];
-                    if (ch) {
+                    if (ch && !this._stopped) {
                         this._buf.push(new Float32Array(ch));
                         this._len += ch.length;
                         if (this._len >= 2048) {
-                            const out = new Float32Array(this._len);
-                            let off = 0;
-                            for (const b of this._buf) { out.set(b, off); off += b.length; }
-                            this.port.postMessage(out, [out.buffer]);
-                            this._buf = []; this._len = 0;
+                            this._flush();
                         }
                     }
                     return true;
@@ -6374,14 +6864,37 @@
         if (this.micActive() || this.uploadAudio) return;
         if (!this.currentModel || this.isCurrentChatStreaming()) return;
 
-        let mediaStream;
+        const diarize = !!this.diarizeUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
+        const translate = !!this.translateUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
+        const targetLanguage = this.targetLanguage || 'Ukrainian';
+        const translationModel = this.translationModel || '';
+        const translationContext = this.translationContext || '';
+        const visualEnabled = !!this.visualEnabled;
+        const visionModel = this.visionModel || '';
+        const visualFrames = this.visualFrames || [];
+        const frameSelection = this.videoFrameSelection || 'uniform';
+        const speakerLabels = {};
+        this.visualSpeakerLabels = {}; this.visualResult = null;
+        const useVisual = visualEnabled && (!!this.visualScreen || visualFrames.length > 0);
+        const advancedMic = diarize || translate || useVisual;
+        let mediaStream, activatedContext;
         try {
-            // Requires a secure context (https or localhost)
+            // Safari needs AudioContext activation in the original click gesture,
+            // before getUserMedia, chat creation, or the WebSocket handshake awaits.
+            activatedContext = new (window.AudioContext || window.webkitAudioContext)();
+            const activation = activatedContext.resume();
+            Promise.resolve(activation).catch(() => {});
             mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            await this._awaitMicContext(activatedContext, activation);
         } catch (e) {
-            alert(window.t('chat.error.mic_unavailable'));
+            if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+            if (activatedContext) Promise.resolve(activatedContext.close()).catch(() => {});
+            alert('Не вдалося запустити мікрофон: ' + (e.message || e));
             return;
         }
+        this.micLevel = 0;
+        this.micAudioSeconds = 0;
+        this.micDeviceLabel = mediaStream.getAudioTracks()[0]?.label || 'Мікрофон';
 
         if (!this.currentChatId) {
             await this.startNewChat({ preserveDraft: true });
@@ -6407,14 +6920,25 @@
         this.setEngineStatus(chatId, { text: window.t('chat.status.listening') });
 
         const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const ws = new WebSocket(`${wsProto}://${location.host}/v1/audio/transcriptions/realtime`);
+        const micPath = advancedMic ? '/v1/audio/transcriptions/realtime/diarize' : '/v1/audio/transcriptions/realtime';
+        const ws = new WebSocket(`${wsProto}://${location.host}${micPath}`);
         ws.binaryType = 'arraybuffer';
 
-        const session = {
+        let session = {
             ws,
+            diarize,
+            translate,
+            targetLanguage,
+            translationModel,
+            translationContext,
+            advancedMic,
+            visualEnabled: useVisual, visionModel, visualFrames, speakerLabels, frameSelection,
             mediaStream,
-            audioContext: null,
+            audioContext: activatedContext,
             workletNode: null,
+            micSource: null,
+            mutedSink: null,
+            captureStartedAt: null,
             chatId,
             requestModel,
             committed: '',
@@ -6424,8 +6948,25 @@
             _beforeUnload: () => this.stopMicTranscription({ discard: true }),
         };
         this.micSession = session;
+        // Alpine wraps nested state in a Proxy. Event guards must compare
+        // against that canonical reactive reference, not the original object.
+        session = this.micSession;
+        session.phase = 'connecting';
+        session.startupTimeout = setTimeout(() => {
+            if (this.micSession === session && !session.finalized) {
+                this._failMicTranscription(session, stream, chatSession,
+                    'Сервер не підтвердив запуск мікрофона за 60 секунд. Сесію скасовано.');
+            }
+        }, 60000);
         this.micSeconds = 0;
-        this._micTimerInterval = setInterval(() => { this.micSeconds++; }, 1000);
+        this._micTimerInterval = setInterval(() => {
+            this.micSeconds++;
+            if (session.captureStartedAt && Date.now() - session.captureStartedAt > 5000
+                && this.micAudioSeconds === 0 && !session.stopping) {
+                this._failMicTranscription(session, stream, chatSession,
+                    'Браузер не передає аудіодані. Перевірте дозвіл Safari на мікрофон та натисніть мікрофон повторно.');
+            }
+        }, 1000);
         window.addEventListener('beforeunload', session._beforeUnload);
 
         const renderLive = () => {
@@ -6443,6 +6984,16 @@
                 type: 'start',
                 model: requestModel,
                 api_key: this.getApiKey(),
+                diarize: session.diarize,
+                translate: session.translate,
+                target_language: session.targetLanguage,
+                translation_model: session.translationModel,
+                translation_context: session.translationContext,
+                visual_enabled: session.visualEnabled,
+                vision_model: session.visionModel,
+                frame_selection: session.frameSelection === 'changes' ? 'changes' : 'uniform',
+                visual_frames: session.visualEnabled ? session.visualFrames : [],
+                speaker_labels: session.speakerLabels,
             }));
         };
         ws.onmessage = async (event) => {
@@ -6450,6 +7001,15 @@
             let data;
             try { data = JSON.parse(event.data); } catch (e) { return; }
             if (data.type === 'ready') {
+                if (session.stopping || session.finalized || session.phase !== 'connecting') return;
+                clearTimeout(session.startupTimeout);
+                session.phase = 'starting_audio';
+                session.startupTimeout = setTimeout(() => {
+                    if (this.micSession === session && !session.finalized) {
+                        this._failMicTranscription(session, stream, chatSession,
+                            'Браузер не запустив захоплення звуку. Сесію скасовано; перевірте доступ до мікрофона.');
+                    }
+                }, 7000);
                 chatSession.messages.push({
                     id: this.newMessageId(),
                     role: 'user',
@@ -6465,6 +7025,11 @@
                     this._failMicTranscription(session, stream, chatSession,
                         window.t('chat.error.mic_unavailable'));
                 }
+            } else if (data.type === 'visual.context') {
+                session.visual = data.visual;
+                this.acceptVisualResult?.(data.visual);
+            } else if (data.type === 'status') {
+                this.setEngineStatus(chatId, { text: data.detail });
             } else if (data.type === 'transcript.delta') {
                 if (data.delta) {
                     session.committed += data.delta;
@@ -6475,6 +7040,13 @@
                 session.partial = data.text || '';
                 renderLive();
             } else if (data.type === 'transcript.done') {
+                if (session.advancedMic && data.audio_bytes !== (session.sentMicBytes || 0)) {
+                    this._failMicTranscription(session, stream, chatSession,
+                        'Сервер не підтвердив обробку всього аудіобуфера.');
+                    return;
+                }
+                if (data.visual) { session.visual = data.visual; this.acceptVisualResult?.(data.visual); }
+                session.transcriptionSegments = data.segments || null;
                 session.committed = data.text ?? session.committed;
                 session.partial = '';
                 this._finalizeMicTranscription(session, stream, chatSession);
@@ -6486,7 +7058,8 @@
         ws.onclose = () => {
             if (this.micSession !== session || session.finalized) return;
             // Connection dropped without a done event: keep committed text
-            if (session.committed) {
+            if (session.committed || session.partial) {
+                if (session.advancedMic) this._markMicDiarizationPartial(session);
                 this._finalizeMicTranscription(session, stream, chatSession);
             } else {
                 this._failMicTranscription(session, stream, chatSession,
@@ -6500,13 +7073,32 @@
         };
     },
 
+    async _awaitMicContext(context, activation) {
+        let timeout;
+        try {
+            await Promise.race([
+                Promise.resolve(activation),
+                new Promise((_, reject) => {
+                    timeout = setTimeout(() => reject(new Error('Safari не запустив аудіо. Натисніть мікрофон повторно.')), 5000);
+                }),
+            ]);
+            if (context.state !== 'running') throw new Error('Аудіоконтекст мікрофона призупинено.');
+        } finally { clearTimeout(timeout); }
+    },
+
     async _startMicCapture(session) {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        session.audioContext = audioContext;
-        if (audioContext.state === 'suspended') {
-            await audioContext.resume();
+        if (session.stopping || session.finalized || this.micSession !== session) return;
+        const audioContext = session.audioContext;
+        if (!audioContext) throw new Error('Аудіоконтекст мікрофона відсутній.');
+        if (audioContext.state !== 'running') {
+            await this._awaitMicContext(audioContext, audioContext.resume());
         }
         const source = audioContext.createMediaStreamSource(session.mediaStream);
+        session.micSource = source;
+        const mutedSink = audioContext.createGain();
+        mutedSink.gain.value = 0;
+        session.mutedSink = mutedSink;
+        mutedSink.connect(audioContext.destination);
         const inputRate = audioContext.sampleRate;
         const targetRate = 16000;
 
@@ -6515,14 +7107,30 @@
         let pendingLen = 0;
         let readPos = 0; // fractional carry across chunks for resampling
         const shipThreshold = Math.round(targetRate * 0.2);
+        const flushPending = () => {
+            if (!pendingLen || session.ws.readyState !== WebSocket.OPEN) return;
+            const merged = new Int16Array(pendingLen);
+            let off = 0;
+            for (const b of pending) { merged.set(b, off); off += b.length; }
+            session.ws.send(merged.buffer);
+            session.sentMicBytes = (session.sentMicBytes || 0) + merged.byteLength;
+            pending = [];
+            pendingLen = 0;
+            this.micAudioSeconds += merged.length / targetRate;
+        };
+        session.flushMicPCM = flushPending;
         const handleChunk = (float32) => {
-            if (session.finalized || session.ws.readyState !== WebSocket.OPEN) return;
+            if (session.finalized || (session.stopping && !session.draining) || session.ws.readyState !== WebSocket.OPEN) return;
+            let energy = 0;
+            for (const value of float32) energy += value * value;
+            const rms = Math.sqrt(energy / Math.max(1, float32.length));
+            this.micLevel = Math.min(100, Math.round(rms * 500));
             const ratio = inputRate / targetRate;
             const out = [];
-            while (readPos < float32.length - 1) {
+            while (readPos < float32.length) {
                 const i = Math.floor(readPos);
                 const frac = readPos - i;
-                const sample = float32[i] * (1 - frac) + float32[i + 1] * frac;
+                const sample = float32[i] * (1 - frac) + float32[Math.min(i + 1, float32.length - 1)] * frac;
                 const s = Math.max(-1, Math.min(1, sample));
                 out.push(s < 0 ? s * 0x8000 : s * 0x7FFF);
                 readPos += ratio;
@@ -6533,14 +7141,7 @@
                 pending.push(Int16Array.from(out));
                 pendingLen += out.length;
             }
-            if (pendingLen >= shipThreshold) {
-                const merged = new Int16Array(pendingLen);
-                let off = 0;
-                for (const b of pending) { merged.set(b, off); off += b.length; }
-                pending = [];
-                pendingLen = 0;
-                session.ws.send(merged.buffer);
-            }
+            if (pendingLen >= shipThreshold) flushPending();
         };
 
         if (audioContext.audioWorklet) {
@@ -6552,8 +7153,27 @@
             } finally {
                 URL.revokeObjectURL(blobUrl);
             }
+            if (session.stopping || session.finalized || this.micSession !== session) return;
             const worklet = new AudioWorkletNode(audioContext, 'omlx-pcm-capture');
-            worklet.port.onmessage = (e) => handleChunk(e.data);
+            worklet.port.onmessage = (e) => {
+                if (e.data?.type === 'flushed') {
+                    session.resolveMicDrain?.();
+                } else {
+                    handleChunk(e.data);
+                }
+            };
+            session.drainMicPCM = () => new Promise((resolve, reject) => {
+                session.resolveMicDrain = () => {
+                    clearTimeout(session.drainTimeout);
+                    session.resolveMicDrain = null;
+                    resolve();
+                };
+                session.drainTimeout = setTimeout(() => {
+                    session.resolveMicDrain = null;
+                    reject(new Error('Не вдалося отримати залишок аудіобуфера мікрофона.'));
+                }, 3000);
+                worklet.port.postMessage({type: 'flush'});
+            });
             source.connect(worklet);
             session.workletNode = worklet;
         } else {
@@ -6561,37 +7181,106 @@
             const proc = audioContext.createScriptProcessor(2048, 1, 1);
             proc.onaudioprocess = (e) => handleChunk(e.inputBuffer.getChannelData(0));
             source.connect(proc);
-            proc.connect(audioContext.destination);
+            // Both implementations use the same silent output path.
             session.workletNode = proc;
         }
+        // Safari pulls an AudioWorklet only as part of an active output graph.
+        // The gain is zero: microphone input is never monitored on speakers.
+        session.workletNode.connect(mutedSink);
+        session.captureStartedAt = Date.now();
+        session.phase = 'listening';
+        if (session.visualEnabled) this._startVisualSampling?.(session);
+        clearTimeout(session.startupTimeout);
+        this.setEngineStatus(session.chatId, {
+            text: (session.diarize && session.translate)
+                ? ('Мікрофон підключено. Діаризація та переклад (' + session.targetLanguage + ') оновлюються приблизно кожні 15 с; позначки попередні.')
+                : (session.translate
+                    ? ('Мікрофон підключено. Переклад (' + session.targetLanguage + ') оновлюється приблизно кожні 15 с.')
+                    : (session.diarize
+                        ? 'Мікрофон підключено. Діаризація оновлюється приблизно кожні 15 с; позначки мовців попередні.'
+                        : 'Мікрофон підключено. Говоріть, потім зробіть паузу близько секунди.')),
+        });
     },
 
-    stopMicTranscription({ discard = false } = {}) {
+    async stopMicTranscription({ discard = false } = {}) {
         const session = this.micSession;
-        if (!session || session.stopping) return;
+        if (!session || session.finalized) return;
+        const stream = this.getStreamSession(session.chatId, true);
+        const chatSession = this.getChatSession(session.chatId, true);
+        if (session.stopping && !discard) return;
         session.stopping = true;
-        this._stopMicAudio(session);
-        if (discard) {
-            session.finalized = true;
-            this._teardownMicSession(session);
+        session.phase = 'stopping';
+        if (session.visualEnabled) this._stopVisualSampling?.(session);
+        session.draining = !discard;
+        // Release the physical microphone now, keep its queued PCM until flush ACK.
+        session.mediaStream?.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+        this.setEngineStatus(session.chatId, { text: 'Мікрофон вимкнено. Передаю залишок аудіобуфера…' });
+        if (!discard && session.drainMicPCM) {
+            try { await session.drainMicPCM(); }
+            catch (e) {
+                this._failMicTranscription(session, stream, chatSession, e.message || String(e));
+                return;
+            }
+            if (session.finalized || this.micSession !== session) return;
+        }
+        session.draining = false;
+        try { session.flushMicPCM?.(); }
+        catch (e) {
+            this._failMicTranscription(session, stream, chatSession, 'Не вдалося передати аудіобуфер: ' + (e.message || e));
             return;
         }
-        if (session.ws.readyState === WebSocket.OPEN) {
-            // Server flushes and replies with transcript.done, which finalizes
-            session.ws.send(JSON.stringify({ type: 'stop' }));
-        } else if (!session.finalized) {
-            const stream = this.getStreamSession(session.chatId, true);
-            const chatSession = this.getChatSession(session.chatId, true);
-            if (session.committed) {
-                this._finalizeMicTranscription(session, stream, chatSession);
-            } else {
+        this._stopMicAudio(session);
+        if (discard || !session.captureStartedAt || this.micAudioSeconds === 0) {
+            if (discard) {
+                session.finalized = true;
                 this._teardownMicSession(session);
                 this.resetStreamSession(stream, { preserveFinalContent: true });
+            } else {
+                this._finalizeMicTranscription(session, stream, chatSession);
             }
+            return;
+        }
+        if (session.ws.readyState !== WebSocket.OPEN) {
+            this._finalizeMicTranscription(session, stream, chatSession);
+            return;
+        }
+        this.setEngineStatus(session.chatId, {
+            text: (session.diarize && session.translate)
+                ? ('Мікрофон вимкнено. Узгоджую мовців та фіналізую переклад (' + session.targetLanguage + ') у всьому записі…')
+                : (session.translate
+                    ? ('Мікрофон вимкнено. Фіналізую переклад (' + session.targetLanguage + ') у всьому записі…')
+                    : (session.diarize
+                        ? 'Мікрофон вимкнено. Обробляю залишок аудіо та узгоджую мовців у всьому записі…'
+                        : 'Мікрофон вимкнено. Завершую транскрипцію всього запису…')),
+        });
+        // Diarization/translation may take longer than the recording itself.
+        // Only transcript.done acknowledges completion of the full audio buffer.
+        if (!session.advancedMic) session.stopTimeout = setTimeout(() => {
+            if (this.micSession === session && !session.finalized) {
+                this.setEngineStatus(session.chatId, { text: 'Очікування завершено. Отриманий текст збережено.' });
+                this._finalizeMicTranscription(session, stream, chatSession);
+            }
+        }, 10000);
+        try { session.ws.send(JSON.stringify({ type: 'stop', audio_bytes: session.sentMicBytes || 0 })); }
+        catch (e) { this._failMicTranscription(session, stream, chatSession, 'Не вдалося завершити передачу аудіо: ' + (e.message || e)); }
+    },
+
+    _markMicDiarizationPartial(session) {
+        const text = session.committed || session.partial || '';
+        if (text && !session.incompleteMarked) {
+            session.committed = text + '\n\n_Попередній результат: остаточну обробку не завершено._';
+            session.partial = '';
+            session.incompleteMarked = true;
         }
     },
 
     _stopMicAudio(session) {
+        if (session.flushMicPCM) {
+            try { session.flushMicPCM(); } catch (e) { console.warn('Microphone flush skipped:', e); }
+            session.flushMicPCM = null;
+        }
+        if (session.micSource) { try { session.micSource.disconnect(); } catch (e) {} session.micSource = null; }
+        if (session.mutedSink) { try { session.mutedSink.disconnect(); } catch (e) {} session.mutedSink = null; }
         if (this._micTimerInterval) {
             clearInterval(this._micTimerInterval);
             this._micTimerInterval = null;
@@ -6601,16 +7290,21 @@
             session.workletNode = null;
         }
         if (session.audioContext) {
-            try { session.audioContext.close(); } catch (e) { }
+            try { Promise.resolve(session.audioContext.close()).catch(() => {}); } catch (e) { }
             session.audioContext = null;
         }
         if (session.mediaStream) {
-            session.mediaStream.getTracks().forEach(t => t.stop());
+            session.mediaStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
             session.mediaStream = null;
         }
     },
 
     _teardownMicSession(session) {
+        if (session.visualEnabled) this._stopVisualSampling?.(session);
+        clearTimeout(session.startupTimeout);
+        clearTimeout(session.stopTimeout);
+        clearTimeout(session.drainTimeout);
+        session.resolveMicDrain?.();
         this._stopMicAudio(session);
         window.removeEventListener('beforeunload', session._beforeUnload);
         try {
@@ -6635,7 +7329,7 @@
                 role: 'assistant',
                 content: text,
                 model: session.requestModel,
-                _transcription: true,
+                _transcription: true, _visual: session.visual || null, _transcriptionSegments: session.transcriptionSegments || null,
                 _perfVisible: false,
             });
             this.saveCurrentChat(session.chatId, chatSession.messages,
@@ -6648,6 +7342,12 @@
 
     _failMicTranscription(session, stream, chatSession, message) {
         if (session.finalized) return;
+        if (session.committed || session.partial) {
+            this._markMicDiarizationPartial(session);
+            session.committed += '\n\nПомилка: ' + message;
+            this._finalizeMicTranscription(session, stream, chatSession);
+            return;
+        }
         session.finalized = true;
         chatSession.messages.push({
             id: stream.targetMessageId || this.newMessageId(),

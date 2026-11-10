@@ -1,3 +1,9 @@
+> **Meeting Workbench fork:** Nemotron diarization, microphone recording,
+> translation and time-scoped video context are integrated in
+> `codex/nemotron-meeting-workbench`. See
+> [fork installation and usage](docs/meeting-workbench.md).
+> The upstream installation commands below install the original project.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/icon-rounded-dark.svg" width="140">
