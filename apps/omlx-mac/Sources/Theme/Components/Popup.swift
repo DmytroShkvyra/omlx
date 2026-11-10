@@ -46,6 +46,8 @@ struct Popup<Value: Hashable>: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Popup") {
     @Previewable @State var host = "127.0.0.1"
     @Previewable @State var quant = "q4"
@@ -64,3 +66,4 @@ struct Popup<Value: Hashable>: View {
     .padding(24)
     .omlxThemed()
 }
+#endif

@@ -81,6 +81,8 @@ struct CopyIconButton: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("CodeChip") {
     VStack(alignment: .leading, spacing: 10) {
         CodeChip(value: "http://127.0.0.1:8000/v1")
@@ -91,3 +93,4 @@ struct CopyIconButton: View {
     .padding(24)
     .omlxThemed()
 }
+#endif

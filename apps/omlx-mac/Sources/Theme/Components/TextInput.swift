@@ -90,6 +90,8 @@ struct TextInput: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("TextInput") {
     @Previewable @State var port = "8000"
     @Previewable @State var qty = "1024"
@@ -117,3 +119,4 @@ struct TextInput: View {
     .padding(24)
     .omlxThemed()
 }
+#endif

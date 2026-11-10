@@ -134,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             main.makeKeyAndOrderFront(nil)
             return
         }
-        if let url = URL(string: "omlxapp://main") {
+        if let url = URL(string: AppConfig.isMeetingBuild ? "omlxmeeting://main" : "omlxapp://main") {
             // Target this bundle explicitly. A source build and an installed
             // release share the app.omlx identifier and omlxapp URL scheme;
             // resolving the URL globally can launch the other copy and leave
@@ -194,11 +194,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.presentAppView()
         }
         if !isRunningUnitTests {
-            do {
-                let cliResult = try ShellEnvWriter.ensureCLIShim()
-                handleCLISetupResult(cliResult)
-            } catch {
-                NSLog("oMLX: CLI shim setup failed — \(error)")
+            // Fork modification: do not replace the upstream installation's CLI.
+            if !AppConfig.isMeetingBuild {
+                do {
+                    let cliResult = try ShellEnvWriter.ensureCLIShim()
+                    handleCLISetupResult(cliResult)
+                } catch {
+                    NSLog("oMLX: CLI shim setup failed — \(error)")
+                }
             }
             startControlServer()
             services.askAI.start(services: services) { [weak self] in

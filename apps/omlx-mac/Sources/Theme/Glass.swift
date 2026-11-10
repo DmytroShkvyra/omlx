@@ -102,6 +102,8 @@ struct DesktopWash: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Glass on desktop wash") {
     ZStack {
         DesktopWash()
@@ -121,3 +123,4 @@ struct DesktopWash: View {
     .frame(width: 480, height: 280)
     .omlxThemed()
 }
+#endif

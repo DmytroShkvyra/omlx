@@ -58,6 +58,8 @@ struct StatusPill: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("StatusPill") {
     VStack(alignment: .leading, spacing: 10) {
         StatusPill(status: .running)
@@ -74,3 +76,4 @@ struct StatusPill: View {
     .padding(24)
     .omlxThemed()
 }
+#endif

@@ -81,6 +81,8 @@ enum SquircleGradient {
     static let update: [Color] = [Color(rgb24: 0x34C759), Color(rgb24: 0x30B350)]
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Squircle gallery") {
     HStack(spacing: 12) {
         Squircle(systemSymbol: "server.rack", gradient: SquircleGradient.server)
@@ -95,3 +97,4 @@ enum SquircleGradient {
     }
     .padding(40)
 }
+#endif

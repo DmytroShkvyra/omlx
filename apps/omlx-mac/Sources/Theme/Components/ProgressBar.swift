@@ -57,6 +57,8 @@ struct OMLXLinearProgressViewStyle: ProgressViewStyle {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview {
     @Previewable @State var progress = 0.3
     let downloadsColors = [Color(rgb24: 0x0A84FF), Color(rgb24: 0x5E5CE6)]
@@ -72,3 +74,4 @@ struct OMLXLinearProgressViewStyle: ProgressViewStyle {
     }
     .padding()
 }
+#endif

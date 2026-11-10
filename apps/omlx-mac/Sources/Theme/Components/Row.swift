@@ -288,6 +288,8 @@ struct NavRow<Icon: View>: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Row in ListGroup") {
     @Previewable @State var autoStart = true
     @Previewable @State var requireKey = false
@@ -314,3 +316,4 @@ struct NavRow<Icon: View>: View {
     .frame(width: 560)
     .omlxThemed()
 }
+#endif

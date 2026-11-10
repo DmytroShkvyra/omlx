@@ -22,6 +22,8 @@ struct ListGroup<Content: View>: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("ListGroup") {
     ListGroup {
         Text("Row 1").frame(maxWidth: .infinity, alignment: .leading).padding(12)
@@ -34,3 +36,4 @@ struct ListGroup<Content: View>: View {
     .frame(width: 520)
     .omlxThemed()
 }
+#endif

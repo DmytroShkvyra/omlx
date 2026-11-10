@@ -52,6 +52,8 @@ extension SectionHeader where Trailing == EmptyView {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("SectionHeader") {
     VStack(alignment: .leading, spacing: 8) {
         SectionHeader("Network")
@@ -66,3 +68,4 @@ extension SectionHeader where Trailing == EmptyView {
     .frame(width: 480)
     .omlxThemed()
 }
+#endif

@@ -69,7 +69,8 @@ enum ReleasesError: Error, CustomStringConvertible {
 }
 
 enum ReleasesChecker {
-    static let releasesURL = URL(string: "https://api.github.com/repos/jundot/omlx/releases?per_page=20")!
+    // Fork modification: updates must never replace this build with upstream.
+    static let releasesURL = URL(string: "https://api.github.com/repos/DmytroShkvyra/omlx/releases?per_page=20")!
 
     /// Fetches recent releases and picks the newest one that beats `currentVersion`
     /// under the given channel. Returns `nil` if we're already up to date.

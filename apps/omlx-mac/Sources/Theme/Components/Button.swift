@@ -68,6 +68,8 @@ extension PrimitiveButtonStyle where Self == OMLXButtonStyle {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Buttons") {
     VStack(alignment: .leading, spacing: 14) {
         HStack(spacing: 8) {
@@ -87,3 +89,4 @@ extension PrimitiveButtonStyle where Self == OMLXButtonStyle {
     .padding(24)
     .omlxThemed()
 }
+#endif

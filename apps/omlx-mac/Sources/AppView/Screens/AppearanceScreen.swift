@@ -270,6 +270,8 @@ struct AppearanceScreen: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("AppearanceScreen") {
     ScrollView {
         AppearanceScreen()
@@ -278,3 +280,4 @@ struct AppearanceScreen: View {
     .frame(width: 640, height: 520)
     .omlxThemed()
 }
+#endif

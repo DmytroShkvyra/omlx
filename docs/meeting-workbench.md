@@ -57,6 +57,41 @@ families needing them may run slower. With full Xcode and the Metal toolchain,
 this fork has not yet published a custom `.app`/DMG release. Upstream DMGs and
 Homebrew commands in the original README install upstream, not this branch.
 
+### Build a native `.app` and DMG without full Xcode
+
+The fork also has a SwiftPM manifest and a local packaging script. They compile
+the native Swift shell from this branch and reuse an installed official 0.7.3
+app for the compatible Python/MLX layers, prebuilt Metal kernels, icon and
+localizations. No model weights, chats or runtime settings enter the bundle.
+
+```bash
+python3 apps/omlx-mac/Scripts/build_meeting_app.py \
+  --donor /path/to/oMLX-0.7.3.app \
+  --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+```
+
+Use the 26.5 SDK with the current Command Line Tools: the newer 27.2 SwiftUI
+SDK requires a State macro plugin shipped only with full Xcode. Xcode-only
+`#Preview` declarations are excluded from SwiftPM builds. This does not remove
+the actual views. Native XCTest suites still require full Xcode (Command Line
+Tools do not include the XCTest framework). With Xcode available, configuration
+and updater regressions can be run with `swift test --package-path
+apps/omlx-mac --sdk <sdk-path> -c release --filter
+'AppConfigTests|ReleasesCheckerTests'`. Local CLI-only validation instead checks
+the bundle signature, embedded Python imports and an actual app-managed server.
+
+Outputs are `dist/meeting-workbench/oMLX Meeting Workbench.app` and
+`dist/meeting-workbench/oMLX-Meeting-Workbench-0.7.3-arm64.dmg`. The local build
+is ad-hoc signed and signature-verified, not Apple-notarized. Its runtime OS
+requirement follows the donor app; FFmpeg remains an external dependency.
+
+The packaged app has a separate bundle ID, URL scheme, preferences directory
+and default data root (`~/.omlx-meeting`). It defaults to port 18081, does not
+replace the original `~/.omlx/bin/omlx` CLI, and checks releases only in this
+fork. A first Finder launch opens its own setup wizard. To use an existing
+configuration or a temporary verification configuration, launch its native
+executable with `OMLX_BASE_PATH` pointing at that configuration directory.
+
 By default, translation/vision requests go to this server's own loopback port
 with its configured API key. `TRANSLATION_BASE_URL` and
 `TRANSLATION_API_KEY` optionally select another compatible server; the local

@@ -621,8 +621,8 @@ final class ServerProcess: @unchecked Sendable {
     }
 
     static func defaultBasePath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".omlx", isDirectory: true)
+        // Fork modification: respect the packaged distribution's state root.
+        URL(fileURLWithPath: AppConfig.defaultBasePath(), isDirectory: true)
     }
 
     static func defaultLogURL() -> URL {

@@ -32,6 +32,8 @@ struct Segmented<Value: Hashable>: View {
     }
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("Segmented") {
     @Previewable @State var mode = "local"
     @Previewable @State var scope = "session"
@@ -49,3 +51,4 @@ struct Segmented<Value: Hashable>: View {
     .padding(24)
     .omlxThemed()
 }
+#endif

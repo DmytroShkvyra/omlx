@@ -661,6 +661,8 @@ private struct ScrollAnchorKey: Equatable {
     let anchor: ServerAnchor?
 }
 
+// Fork modification: previews require Xcode-only compiler plugins.
+#if !SWIFT_PACKAGE
 #Preview("AppView — light") {
     AppView()
         .frame(width: 1140, height: 760)
@@ -672,3 +674,4 @@ private struct ScrollAnchorKey: Equatable {
         .frame(width: 1140, height: 760)
         .preferredColorScheme(.dark)
 }
+#endif

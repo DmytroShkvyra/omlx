@@ -25,6 +25,11 @@
 import Foundation
 
 struct AppConfig: Sendable, Equatable, Codable {
+    // Fork modification: keep the packaged meeting app independent of upstream.
+    static var isMeetingBuild: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "OMLXDistributionFlavor") as? String == "meeting"
+    }
+
     /// The raw bind address the user configured (e.g. `0.0.0.0`, `127.0.0.1`, `localhost`).
     var bindAddress: String
     /// The connectable host — normalises wildcard/local binds to loopback
@@ -83,7 +88,7 @@ struct AppConfig: Sendable, Equatable, Codable {
         let modelDir = defaultModelDir(forBasePath: base)
         return AppConfig(
             bindAddress: "127.0.0.1",
-            port: 8000,
+            port: isMeetingBuild ? 18081 : 8000,
             autoStartOnLaunch: true,
             apiKey: nil,
             basePath: base,
@@ -252,7 +257,7 @@ struct AppConfig: Sendable, Equatable, Codable {
 
     static func defaultBasePath() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return home.appendingPathComponent(".omlx", isDirectory: true).path
+        return home.appendingPathComponent(isMeetingBuild ? ".omlx-meeting" : ".omlx", isDirectory: true).path
     }
 
     static func settingsURL(basePath: String) -> URL {
@@ -271,7 +276,7 @@ struct AppConfig: Sendable, Equatable, Codable {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
-        let dir = base.appendingPathComponent("oMLX", isDirectory: true)
+        let dir = base.appendingPathComponent(isMeetingBuild ? "oMLX Meeting Workbench" : "oMLX", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
