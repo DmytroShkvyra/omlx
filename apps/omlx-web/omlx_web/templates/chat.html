@@ -2049,6 +2049,22 @@
                                 <input type="checkbox" x-model="translateUpload" :disabled="isCurrentChatStreaming()">
                                 <span>Перекладати</span>
                             </label>
+                            <div class="flex items-center gap-1.5">
+                                <span style="color:var(--text-tertiary)">Мова мовлення:</span>
+                                <select x-model="recognitionLanguage" :disabled="isCurrentChatStreaming()"
+                                    class="bg-transparent border border-line rounded px-1.5 py-0.5 text-xs outline-none"
+                                    style="color:var(--text-primary); background-color:var(--bg-secondary, #222);"
+                                    title="Фіксує мову розпізнавання для кожного фрагмента запису. 'Авто' дозволяє мові плавати між фрагментами — саме це спричиняє випадковий перехід на іншу мову посеред запису.">
+                                    <option value="uk">Українська (за замовчуванням)</option>
+                                    <option value="">Авто (може плавати між мовами)</option>
+                                    <option value="en">English</option>
+                                    <option value="ru">Русский</option>
+                                    <option value="pl">Polski</option>
+                                    <option value="de">Deutsch</option>
+                                    <option value="fr">Français</option>
+                                    <option value="es">Español</option>
+                                </select>
+                            </div>
                             <div x-show="translateUpload" class="flex items-center gap-1.5" x-cloak>
                                 <span style="color:var(--text-tertiary)">Мова:</span>
                                 <select x-model="targetLanguage" :disabled="isCurrentChatStreaming()"
@@ -3075,6 +3091,13 @@
             diarizeUpload: false,
             translateUpload: false,
             targetLanguage: 'Ukrainian',
+            // Fork fix: live boundary chunks and file segments were each
+            // auto-detecting language independently (language=None), so a
+            // single ambiguous ~4-8s chunk could flip the whole rest of the
+            // session to the wrong language (#drift). Pin to Ukrainian by
+            // default; 'Авто' restores the old per-chunk auto-detect for
+            // genuinely multi-language meetings.
+            recognitionLanguage: 'uk',
             visualEnabled: false,
             visionModel: '',
             videoFrameSelection: 'uniform',
@@ -6639,6 +6662,7 @@
         const visionModel = this.visionModel || '';
         const visualFrames = this.visualFrames || [];
         const frameSelection = this.videoFrameSelection || 'uniform';
+        const language = this.recognitionLanguage || null;
         const speakerLabels = {};
         this.visualSpeakerLabels = {}; this.visualResult = null;
         this.uploadAudio = null;
@@ -6670,6 +6694,7 @@
             diarize,
             translate,
             targetLanguage,
+            language,
             translationModel,
             translationContext,
             visualEnabled, visionModel, visualFrames, speakerLabels,
@@ -6677,7 +6702,7 @@
         });
     },
 
-    async streamTranscription({ chatId, model, file, filename, diarize = false, translate = false, targetLanguage = 'Ukrainian', translationModel = '', translationContext = '', visualEnabled = false, visionModel = '', visualFrames = [], speakerLabels = {}, frameSelection = 'uniform' }) {
+    async streamTranscription({ chatId, model, file, filename, diarize = false, translate = false, targetLanguage = 'Ukrainian', language = null, translationModel = '', translationContext = '', visualEnabled = false, visionModel = '', visualFrames = [], speakerLabels = {}, frameSelection = 'uniform' }) {
         const chatSession = this.getChatSession(chatId, true);
         const stream = this.getStreamSession(chatId, true);
         const requestModel = this.resolveGatewayModelId(model);
@@ -6698,6 +6723,7 @@
         form.append('file', file, filename);
         form.append('model', requestModel);
         form.append('stream', 'true');
+        if (language) form.append('language', language);
         const visualInput = visualEnabled && (file.type?.startsWith('video/') || /\.(mp4|mkv|mov|m4v|webm|avi)$/i.test(filename) || visualFrames.length);
         if (visualInput) {
             form.append('visual_enabled', 'true');
@@ -6896,6 +6922,7 @@
         const diarize = !!this.diarizeUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
         const translate = !!this.translateUpload && /nemotron.*transcribe/i.test(this.currentModel || '');
         const targetLanguage = this.targetLanguage || 'Ukrainian';
+        const language = this.recognitionLanguage || null;
         const translationModel = this.translationModel || '';
         const translationContext = this.translationContext || '';
         const visualEnabled = !!this.visualEnabled;
@@ -6960,6 +6987,7 @@
             diarize,
             translate,
             targetLanguage,
+            language,
             translationModel,
             translationContext,
             advancedMic,
@@ -7018,6 +7046,7 @@
                 diarize: session.diarize,
                 translate: session.translate,
                 target_language: session.targetLanguage,
+                language: session.language,
                 translation_model: session.translationModel,
                 translation_context: session.translationContext,
                 visual_enabled: session.visualEnabled,
