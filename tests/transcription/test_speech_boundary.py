@@ -17,7 +17,7 @@ def pcm(seconds, speech=True):
 
 
 class BoundaryTests(unittest.TestCase):
-    def test_pause_after_speech_triggers_before_eight_seconds(self):
+    def test_pause_after_speech_triggers_before_four_seconds(self):
         gate = SpeechBoundary()
         gate.feed(pcm(1)); gate.feed(pcm(.4, False))
         self.assertIsNone(gate.due(44800))
@@ -27,15 +27,15 @@ class BoundaryTests(unittest.TestCase):
         gate.feed(pcm(3, False))
         self.assertIsNone(gate.due(147200), 'The same pause must not repeatedly trigger translation')
 
-    def test_continuous_speech_reaches_maximum_eight_second_interval(self):
+    def test_continuous_speech_reaches_maximum_four_second_interval(self):
         gate = SpeechBoundary()
-        gate.feed(pcm(7.8))
-        self.assertIsNone(gate.due(249600))
+        gate.feed(pcm(3.8))
+        self.assertIsNone(gate.due(121600))
         gate.feed(pcm(.2))
-        self.assertEqual(gate.due(256000), 'max_interval')
-        gate.snapshot_started(256000)
-        gate.feed(pcm(7.8)); self.assertIsNone(gate.due(505600))
-        gate.feed(pcm(.2)); self.assertEqual(gate.due(512000), 'max_interval')
+        self.assertEqual(gate.due(128000), 'max_interval')
+        gate.snapshot_started(128000)
+        gate.feed(pcm(3.8)); self.assertIsNone(gate.due(249600))
+        gate.feed(pcm(.2)); self.assertEqual(gate.due(256000), 'max_interval')
 
     def test_packet_boundaries_do_not_change_detection_and_silence_is_idle(self):
         gate = SpeechBoundary()
@@ -84,12 +84,12 @@ class StreamingBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(socket.sent[-1]['type'],'transcript.done')
             self.assertEqual(socket.sent[-1]['audio_bytes'],frames[-1]*2)
             ready=next(e for e in socket.sent if e['type']=='ready')
-            self.assertEqual(ready['preview_seconds'],8)
+            self.assertEqual(ready['preview_seconds'],4)
             self.assertEqual(ready['silence_seconds'],.6)
             self.assertFalse(engine.active)
 
     async def test_pause_starts_translation_and_stop_keeps_pending_tail(self):
         await self.run_trigger([pcm(1),pcm(.6,False)],'silence')
 
-    async def test_eight_seconds_starts_translation_without_waiting_for_stop(self):
-        await self.run_trigger([pcm(8)],'max_interval')
+    async def test_four_seconds_starts_translation_without_waiting_for_stop(self):
+        await self.run_trigger([pcm(4)],'max_interval')

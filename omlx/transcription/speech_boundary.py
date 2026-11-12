@@ -5,7 +5,7 @@ import sys
 
 
 class SpeechBoundary:
-    def __init__(self, sample_rate=16000, max_seconds=8, silence_seconds=.6, rms_threshold=.01):
+    def __init__(self, sample_rate=16000, max_seconds=4, silence_seconds=.6, rms_threshold=.01):
         self.frame_samples = round(sample_rate * .02)
         self.max_bytes = round(sample_rate * max_seconds) * 2
         self.silence_samples = round(sample_rate * silence_seconds)

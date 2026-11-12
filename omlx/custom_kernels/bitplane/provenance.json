@@ -1,0 +1,15 @@
+{
+  "origin": "bit-ffn-lab",
+  "implementation": "xor-hybrid-v7-unified",
+  "imported": "2026-11-10",
+  "files": {
+    "runtime.py": {
+      "source": "bitffn_bitplane.py",
+      "sha256": "bbe349b59092666fa44fcea66e03aa1fa9974ec2e4bde36f395e15c6dec3fe08"
+    },
+    "codec.py": {
+      "source": "bitffn/bitplane_codec.py",
+      "sha256": "fdf548c9b5fb48cbd11ea0a25b676eb5c50257cf17dbed760e640ed9ebad6b63"
+    }
+  }
+}

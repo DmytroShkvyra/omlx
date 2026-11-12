@@ -256,6 +256,7 @@ include = ["omlx*"]
 "omlx.custom_kernels.lowbit" = ["*.metallib", "*.so"]
 "omlx.custom_kernels.quant_matmul" = ["*.metallib", "*.so"]
 "omlx.custom_kernels.sparse_index" = ["*.metallib", "*.so"]
+"omlx.custom_kernels.bitplane" = ["README.md", "provenance.json"]
 
 [tool.uv]
 # mlx and mlx-lm are git-pinned; override transitive pins

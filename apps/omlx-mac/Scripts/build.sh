@@ -616,6 +616,12 @@ rsync -a \
     "$REPO_ROOT/omlx/" "$RESOURCES_DIR/omlx/"
 ok "  + omlx package"
 
+log "Installing bundled Bitplane loader support…"
+"$PYTHON_BIN" "$RESOURCES_DIR/omlx/custom_kernels/bitplane/install.py" \
+    --site-packages "$PYTHON_DIR/framework-mlx-base/lib/python3.11/site-packages" \
+    || die "Bitplane loader hooks do not match the bundled MLX dependencies."
+ok "  + Bitplane loader support (Metal kernels compile through MLX at runtime)"
+
 log "Copying omlx_web package from source tree…"
 rm -rf "$RESOURCES_DIR/omlx_web"
 mkdir -p "$RESOURCES_DIR/omlx_web"

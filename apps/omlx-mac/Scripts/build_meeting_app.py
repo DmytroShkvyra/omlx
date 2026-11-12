@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -74,6 +75,8 @@ def main():
             run('/usr/bin/rsync', '-a', '--delete', '--exclude=__pycache__', '--exclude=*.pyc',
                 '--exclude=*.so', '--exclude=*.dylib', '--exclude=*.metallib',
                 '--exclude=csrc', '--exclude=include', str(source)+'/', str(destination)+'/')
+        run(sys.executable, resources/'omlx/custom_kernels/bitplane/install.py',
+            '--site-packages', resources/'Python/framework-mlx-base/lib/python3.11/site-packages')
         for bundle in binpath.glob('*.bundle'):
             shutil.copytree(bundle, resources/bundle.name, dirs_exist_ok=True)
         for name in ('omlx-cli', 'omlx-cluster-python'):
