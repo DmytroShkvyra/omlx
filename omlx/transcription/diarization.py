@@ -15,6 +15,26 @@ import tempfile
 
 SPEAKER = re.compile(r'<spk:([0-7])>')
 DEFAULT_MAX_TOKENS = 32768
+# Fork fix (hallucination loop): live mic and diarized-upload transcription
+# re-decode the whole recording on every boundary tick, with no built-in
+# stop condition besides max_tokens (32768). A trailing silent/noisy tail
+# (very common right as the user pauses or clicks Stop) can make Nemotron
+# lock onto a short phrase and repeat it until that budget is exhausted,
+# flooding the transcript with garbage and wasting the whole generation.
+# Detect a short unit (<=80 chars) repeated 6+ times in a row near the end
+# of the text seen so far and treat it as a degenerate loop, not speech.
+_REPETITION_LOOP = re.compile(r'(.{1,80}?)\1{5,}\Z', re.DOTALL)
+_REPETITION_WINDOW = 4000
+
+
+def _trim_repetition_loop(text):
+    # Return (trimmed_text, True) if text ends in a repeated loop.
+    tail = text[-_REPETITION_WINDOW:]
+    match = _REPETITION_LOOP.search(tail)
+    if match is None:
+        return text, False
+    cut = len(tail) - match.start()
+    return text[:-cut].rstrip(), True
 ORIGINAL_LANGUAGE_PROMPT = (
     'Transcribe the audio verbatim in the original spoken language. '
     'Keep the same language as spoken and do not translate into English or any other language. '
@@ -120,6 +140,7 @@ async def transcription_events(engine, path, model, max_tokens, language=None, p
             msg = 'Аналізую аудіо…'
 
         yield audio._sse_event({'type': 'transcript.status', 'message': msg})
+        hallucination_truncated = False
         async for chunk in iterator:
             if native_capture is not None:
                 native_capture.observe(chunk)
@@ -129,14 +150,21 @@ async def transcription_events(engine, path, model, max_tokens, language=None, p
             delta = formatter.feed(raw[-1]) if diarize else raw[-1]
             if delta and not translate:
                 yield audio._sse_event({'type': 'transcript.text.delta', 'delta': delta})
+            if _trim_repetition_loop(''.join(raw))[1]:
+                hallucination_truncated = True
+                yield audio._sse_event({'type': 'transcript.status',
+                    'message': 'Виявлено зациклений фрагмент (ймовірно, тиша чи шум); зупиняю цю розшифровку раніше.'})
+                break
         if diarize and not translate:
             tail = formatter.feed('', final=True)
             if tail:
                 yield audio._sse_event({'type': 'transcript.text.delta', 'delta': tail})
-        if generation_tokens >= max_tokens:
+        if not hallucination_truncated and generation_tokens >= max_tokens:
             raise RuntimeError('Досягнуто ліміт тексту; результат неповний. Повторіть з більшим max_tokens.')
         await iterator.aclose()
         text = ''.join(raw)
+        if hallucination_truncated:
+            text, _ = _trim_repetition_loop(text)
         source_text = readable_text(text) if diarize else text.strip()
         source_segments = speaker_segments(text) if diarize else []
         if diarize and text.strip() and (not source_segments or text[:SPEAKER.search(text).start()].strip()):
