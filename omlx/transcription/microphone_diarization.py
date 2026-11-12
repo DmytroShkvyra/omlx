@@ -238,6 +238,16 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
                 changed.set()
 
     activity = engine._begin_activity('transcribing', detail='Microphone transcription')
+    # Fork fix (#session-evict): _begin_activity/_finish_activity already
+    # cover this span, but a counter reference-counted independently of the
+    # admin-facing activity tracker is a cheaper-to-reason-about belt and
+    # braces against the engine pool evicting Nemotron mid-session to admit
+    # another model (the next boundary tick would otherwise fail with
+    # "Engine not started. Call start() first.").
+    begin_diarize = getattr(engine, 'begin_diarize_session', None)
+    end_diarize = getattr(engine, 'end_diarize_session', None)
+    if callable(begin_diarize):
+        begin_diarize()
     receiver = None
     try:
         processor = asyncio.create_task(process())
@@ -262,3 +272,5 @@ async def run_microphone_session(websocket, engine, model, directory, max_bytes,
         await asyncio.gather(*(task for task in (receiver, processor) if task is not None), return_exceptions=True)
         recording.close()
         await engine._finish_activity(activity)
+        if callable(end_diarize):
+            end_diarize()

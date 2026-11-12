@@ -110,6 +110,14 @@ async def transcription_events(engine, path, model, max_tokens, language=None, p
     iterator = None
     native_scope = nullcontext()
     native_capture = None
+    # Fork fix (#session-evict): pin the engine for this call's whole span,
+    # covering file-upload diarize/translate (one call = the whole file,
+    # which can run for minutes) the same way run_microphone_session() pins
+    # it for a live mic session.
+    begin_diarize = getattr(engine, 'begin_diarize_session', None)
+    end_diarize = getattr(engine, 'end_diarize_session', None)
+    if callable(begin_diarize):
+        begin_diarize()
     try:
         if visual is not None:
             from .native_timestamps import capture_native_timestamps
@@ -254,3 +262,5 @@ async def transcription_events(engine, path, model, max_tokens, language=None, p
         finally:
             native_scope.__exit__(None, None, None)
             audio._cleanup_tempfile(path)
+            if callable(end_diarize):
+                end_diarize()

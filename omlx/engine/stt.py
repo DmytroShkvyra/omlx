@@ -629,6 +629,15 @@ class STTEngine(BaseNonStreamingEngine):
         self._model = None
         self._kwargs = kwargs
         self._realtime_active = False
+        # Fork fix (#session-evict): a live mic/diarize session only calls
+        # transcribe_stream() in short bursts (one per speech-boundary tick)
+        # and otherwise just listens for more audio in between. Without an
+        # explicit counter the engine pool sees the engine as idle during
+        # those gaps and can evict/stop it to admit another model, leaving
+        # the next tick fail with "Engine not started. Call start() first."
+        # (#hallucination-loop's sibling bug). Callers hold this for the
+        # whole session, not just while actually decoding.
+        self._diarize_sessions = 0
 
     @property
     def model_name(self) -> str:
@@ -1277,6 +1286,34 @@ class STTEngine(BaseNonStreamingEngine):
         self._realtime_active = False
         await self._finish_activity(activity_id)
         logger.info("STT realtime session ended: model=%s", self._model_name)
+
+    def begin_diarize_session(self) -> None:
+        """Pin this engine against pool eviction for a diarize/live-mic span.
+
+        Must be paired with end_diarize_session() in a finally block. Safe
+        to call multiple times concurrently (reference-counted) because a
+        live mic session and its own per-chunk transcription_events() call
+        both hold one of these at once.
+        """
+        self._diarize_sessions += 1
+
+    def end_diarize_session(self) -> None:
+        self._diarize_sessions = max(0, self._diarize_sessions - 1)
+
+    def has_active_requests(self) -> bool:
+        """Tell the engine pool not to evict mid diarize/live-mic session.
+
+        ActivityTrackingMixin already covers _begin_activity()/_finish_activity()
+        spans (including run_microphone_session's own 'Microphone transcription'
+        activity); this adds coverage for the realtime-session flag and the
+        diarize-session counter so a pool scan reads busy for the entire
+        boundary-chunked live-mic span, not just while a chunk is decoding.
+        """
+        return (
+            super().has_active_requests()
+            or self._realtime_active
+            or self._diarize_sessions > 0
+        )
 
     def get_stats(self) -> dict[str, Any]:
         """Get engine statistics."""
