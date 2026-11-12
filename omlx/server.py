@@ -245,6 +245,8 @@ from .exceptions import (
 )
 from .model_settings import forced_ct_keys, merge_chat_template_request_kwargs
 from .models.decision import DecisionContextLengthError, DecisionRequestError
+from .prefill_helper.routes import router as prefill_helper_router
+from .prefill_helper.routes import set_engine_pool_getter as set_prefill_helper_pool
 from .prefill_progress import get_prefill_tracker
 from .server_metrics import get_server_metrics, reset_server_metrics
 from .utils import gpu_power
@@ -848,8 +850,10 @@ except ImportError:
 from .admin.auth import _RedirectToLogin, require_admin, set_web_ui_enabled
 from .admin.routes import (
     configured_api_key,
+    configured_custom_theme,
     configured_ui_language,
     is_admin_request,
+    reasoning_levels,
     set_admin_getters,
 )
 from .admin.routes import router as admin_router
@@ -884,6 +888,7 @@ else:
             is_admin=is_admin_request,
             ui_language=configured_ui_language,
             main_api_key=configured_api_key,
+            custom_theme=configured_custom_theme,
         )
     )
     # Before admin_router so the page routes keep their original order.
@@ -952,6 +957,15 @@ def _register_cluster_routes() -> None:
     )
     app.include_router(
         pair_admin_router,
+        dependencies=[
+            Depends(require_admin),
+            Depends(require_distributed_inference_enabled),
+        ],
+    )
+    # Prefill Accelerator: helpers are paired Macs, so it shares the gate.
+    set_prefill_helper_pool(get_engine_pool)
+    app.include_router(
+        prefill_helper_router,
         dependencies=[
             Depends(require_admin),
             Depends(require_distributed_inference_enabled),
@@ -2420,7 +2434,7 @@ def _prepare_chat_prompt_for_request(
     is_partial: bool | None = None,
 ) -> tuple[int, tuple[str, list[int]] | None]:
     # Subclasses (e.g. distributed) have their own prompt handling.
-    if type(engine) is BatchedEngine:
+    if type(engine) in (BatchedEngine, VLMBatchedEngine):
         prepared = engine.prepare_chat_prompt(
             messages, tools, chat_template_kwargs, is_partial
         )
@@ -2434,6 +2448,16 @@ def _prepare_chat_prompt_for_request(
         ),
         None,
     )
+
+
+async def _prepare_prompt_off_loop(engine: BaseEngine, prepare, *args, **kwargs):
+    """Call ``prepare(engine, ...)`` in a worker thread for batched engines.
+
+    Encoding a long prompt on the event loop stalls every other stream.
+    """
+    if type(engine) in (BatchedEngine, VLMBatchedEngine):
+        return await asyncio.to_thread(prepare, engine, *args, **kwargs)
+    return prepare(engine, *args, **kwargs)
 
 
 class _ContextLengthExceededError(HTTPException):
@@ -3787,6 +3811,7 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
 
     if _server_state.engine_pool is not None:
         status = _server_state.engine_pool.get_status()
+        model_types = {m["id"]: m.get("model_type") for m in status["models"]}
         settings_manager = _server_state.settings_manager
 
         hide_helpers = bool(
@@ -3840,13 +3865,14 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
                 ModelInfo(
                     id=display_id,
                     owned_by="omlx",
+                    model_type=m.get("model_type"),
                     max_model_len=get_max_context_window(model_id),
                 )
             )
         # Both sets are needed by the exposed-profile and Claude tier-alias
         # blocks below, and the latter runs with or without a settings manager,
         # so they are built here rather than inside the settings guard.
-        physical_ids = {m["id"] for m in status["models"]}
+        physical_ids = set(model_types)
         existing_ids = {m.id for m in models}
         if settings_manager:
             for profile in settings_manager.list_exposed_profile_models():
@@ -3862,6 +3888,7 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
                     ModelInfo(
                         id=profile_model_id,
                         owned_by="omlx",
+                        model_type=model_types.get(source_model_id),
                         max_model_len=get_max_context_window(profile_model_id),
                     )
                 )
@@ -3910,6 +3937,7 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
                     ClaudeTierModelInfo(
                         id=slot_id,
                         owned_by="omlx",
+                        model_type=model_types.get(tier_model),
                         max_model_len=get_max_context_window(tier_model),
                         display_name=tier_model,
                         created_at=created_at,
@@ -3923,7 +3951,9 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
     if _markitdown_is_visible() and not any(
         m.id == MARKITDOWN_MODEL_ID for m in models
     ):
-        models.append(ModelInfo(id=MARKITDOWN_MODEL_ID, owned_by="omlx"))
+        models.append(
+            ModelInfo(id=MARKITDOWN_MODEL_ID, owned_by="omlx", model_type="markitdown")
+        )
 
     # Favorites first; stable sort keeps alphabetical order within groups.
     if favorite_ids:
@@ -3934,7 +3964,7 @@ async def list_models(_: bool = Depends(verify_inference_api_key)) -> JSONRespon
     # ``ModelInfo`` (dropping the tier metadata), while a route-level
     # exclude would drop upstream fields like ``max_model_len: null``.
     # Per-item ``model_dump()`` honors each instance's own field config:
-    # standard entries stay byte-identical, tier aliases carry metadata.
+    # standard entries omit tier fields; aliases carry them.
     return JSONResponse(
         content={
             "object": "list",
@@ -3966,6 +3996,8 @@ async def list_models_status(_: bool = Depends(verify_api_key)):
             continue
 
         m["max_context_window"] = get_max_context_window(model_id)
+        # The chat UI's stops, for clients that offer effort per model.
+        m["reasoning_levels"] = reasoning_levels(m)
         source_model_id = m.get("source_model_id") or model_id
 
         # Resolve effective max_tokens: model setting > global default
@@ -5152,8 +5184,9 @@ async def create_chat_completion(
         )
         # Validate context window before sending to model
         try:
-            num_prompt_tokens, prepared_prompt = _prepare_chat_prompt_for_request(
+            num_prompt_tokens, prepared_prompt = await _prepare_prompt_off_loop(
                 engine,
+                _prepare_chat_prompt_for_request,
                 messages,
                 tools_for_template,
                 chat_template_kwargs=merged_ct_kwargs or None,
@@ -5940,11 +5973,13 @@ def _compile_grammar_for_request(
     unhonored strict request when ``strict: true`` was set) rather than being
     silent (#1241).
     """
-    compiler = getattr(engine, "grammar_compiler", None)
-
     fmt = _build_format_element(structured_outputs, response_format)
     if fmt is None:
+        # ``grammar_compiler`` builds an xgrammar TokenizerInfo over the
+        # full vocab on first access, so plain text must not touch it.
         return None
+
+    compiler = getattr(engine, "grammar_compiler", None)
 
     if compiler is None:
         if structured_outputs is not None:
@@ -6986,7 +7021,7 @@ async def stream_chat_completion(
         # Protocol parser already extracted structured tool calls.
         tool_calls = _convert_parser_tool_calls(last_output.tool_calls)
         cleaned_text = ""
-    elif has_tools and accumulated_text:
+    elif has_tools:
         # Separate thinking from content, then parse tool calls from content
         # (falls back to thinking content for small models)
         thinking_content, regular_content = extract_thinking(
@@ -8092,7 +8127,9 @@ async def create_anthropic_message(
         chat_kwargs.update(_cache_store_kwargs(http_request))
 
         # Validate context window before sending to model
-        num_prompt_tokens, prepared_prompt = _count_anthropic_prompt(engine, prompt)
+        num_prompt_tokens, prepared_prompt = await _prepare_prompt_off_loop(
+            engine, _count_anthropic_prompt, prompt
+        )
         validate_context_window(num_prompt_tokens, request.model)
 
         if prepared_prompt is not None:
@@ -8298,7 +8335,9 @@ async def count_anthropic_tokens(
             thinking=request.thinking,
         )
         prompt = await _prepare_anthropic_prompt(temp_request, engine, resolved_model)
-        input_tokens = _count_anthropic_prompt(engine, prompt)[0]
+        input_tokens, _ = await _prepare_prompt_off_loop(
+            engine, _count_anthropic_prompt, prompt
+        )
         logger.debug(
             f"Token count: {input_tokens} tokens for {len(prompt.messages)} messages"
         )
@@ -8598,6 +8637,11 @@ async def create_response(
             consolidate_system_messages=False,
             preserve_images=preserve_tool_images,
         )
+        if engine.model_type == "gpt_oss":
+            # Same history shape as extract_harmony_messages. The Harmony template
+            # can reject reasoning_content, which transformers renders as thinking.
+            for msg in messages:
+                msg.pop("reasoning_content", None)
 
         # Convert tools: flat → nested. namespace_aliases maps each expanded
         # namespace member's wire name back for the return path.
@@ -8746,8 +8790,9 @@ async def create_response(
 
         # Validate context window
         try:
-            num_prompt_tokens, prepared_prompt = _prepare_chat_prompt_for_request(
+            num_prompt_tokens, prepared_prompt = await _prepare_prompt_off_loop(
                 engine,
+                _prepare_chat_prompt_for_request,
                 messages,
                 tools_for_template,
                 chat_template_kwargs=merged_ct_kwargs or None,
@@ -9511,7 +9556,7 @@ async def stream_responses_api(
     if last_output and last_output.tool_calls:
         tool_calls = _convert_parser_tool_calls(last_output.tool_calls)
         cleaned_text = ""
-    elif has_tools and accumulated_text:
+    elif has_tools:
         thinking_content, regular_content = extract_thinking(
             accumulated_text,
             leading_only=leading_only,

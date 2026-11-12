@@ -59,7 +59,7 @@ from omlx.api.utils import (
     uses_native_reasoning_content,
 )
 from omlx.exceptions import InvalidRequestError
-from omlx.model_settings import ModelSettings
+from omlx.model_settings import ModelSettings, merge_chat_template_request_kwargs
 
 
 class TestReasoningEffortChatTemplateKwargs:
@@ -84,6 +84,38 @@ class TestReasoningEffortChatTemplateKwargs:
 
         assert merged == {"reasoning_effort": 0.9}
         assert isinstance(merged["reasoning_effort"], float)
+
+    @pytest.mark.parametrize("effort", ["none", " Off "])
+    def test_off_effort_disables_thinking_and_keeps_effort(self, effort):
+        assert merge_reasoning_effort_chat_template_kwargs(None, effort) == {
+            "enable_thinking": False,
+            "reasoning_effort": effort,
+        }
+
+    def test_explicit_enable_thinking_wins_over_none_effort(self):
+        merged = merge_reasoning_effort_chat_template_kwargs(
+            {"enable_thinking": True}, "none"
+        )
+
+        assert merged == {"enable_thinking": True, "reasoning_effort": "none"}
+
+    def test_explicit_template_effort_wins_over_none_effort(self):
+        merged = merge_reasoning_effort_chat_template_kwargs(
+            {"reasoning_effort": "low"}, "none"
+        )
+
+        assert merged == {"reasoning_effort": "low"}
+
+    def test_forced_enable_thinking_keeps_none_effort(self):
+        settings = ModelSettings(
+            enable_thinking=True, forced_ct_kwargs=["enable_thinking"]
+        )
+
+        merged = merge_chat_template_request_kwargs(
+            settings, merge_reasoning_effort_chat_template_kwargs(None, "none")
+        )
+
+        assert merged == {"enable_thinking": True, "reasoning_effort": "none"}
 
 
 class TestCleanOutputText:
@@ -466,6 +498,32 @@ class TestExtractTextContent:
         assert result[0]["role"] == "system"
         assert result[0]["content"] == "You are a coding assistant."
 
+    @pytest.mark.parametrize(
+        "extract", [extract_text_content, extract_multimodal_content]
+    )
+    def test_native_tool_results_follow_tool_call_order(self, extract):
+        """Tool results are rendered in the order of the assistant's tool_calls."""
+
+        class NativeToolTokenizer:
+            has_tool_calling = True
+
+        calls = [
+            {"id": tid, "function": {"name": "read", "arguments": "{}"}}
+            for tid in ("call_a", "call_b")
+        ]
+        messages = [
+            Message(role="assistant", content="", tool_calls=calls),
+            Message(role="tool", tool_call_id="call_b", content="B"),
+            Message(role="tool", tool_call_id="call_a", content="A"),
+        ]
+
+        result = extract(messages, tokenizer=NativeToolTokenizer())
+
+        assert [(msg["tool_call_id"], msg["content"]) for msg in result[1:]] == [
+            ("call_a", "A"),
+            ("call_b", "B"),
+        ]
+
 
 class TestExtractTextContentReasoningReconstruction:
     """Tests that extract_text_content reassembles <think> from reasoning_content.
@@ -529,6 +587,16 @@ class TestExtractTextContentReasoningReconstruction:
         result = extract_text_content(messages)
         assert len(result) == 1
         assert result[0]["content"] == "A"
+
+    def test_inline_thinking_matching_reasoning_is_not_duplicated(self):
+        messages = [
+            Message(
+                role="assistant", reasoning_content="R", content="<think>R</think>A"
+            ),
+        ]
+        result = extract_text_content(messages)
+        assert len(result) == 1
+        assert result[0]["content"] == "<think>R</think>A"
 
 
 class TestExtractTextContentNativeReasoningContent:
@@ -637,6 +705,17 @@ class TestExtractTextContentNativeReasoningContent:
         assert result[0]["content"] == "A"
         assert result[0]["reasoning_content"] == "R"
 
+    def test_native_mode_does_not_duplicate_inline_thinking(self):
+        messages = [
+            Message(
+                role="assistant", reasoning_content="R", content="<think>R</think>A"
+            ),
+        ]
+        result = extract_text_content(messages, native_reasoning_content=True)
+        assert len(result) == 1
+        assert result[0]["content"] == "A"
+        assert result[0]["reasoning_content"] == "R"
+
 
 class TestUsesNativeReasoningContent:
     def test_detects_minimax_m3_by_config_type(self):
@@ -681,6 +760,10 @@ class TestUsesNativeReasoningContent:
             "any-name",
             config_model_type="deepseek_v3",
         )
+
+    @pytest.mark.parametrize("key", ["config_model_type", "engine_model_type"])
+    def test_detects_glm5_next(self, key):
+        assert uses_native_reasoning_content("any-name", **{key: "glm5_next"})
 
 
 class TestConvertAnthropicToInternal:
@@ -896,6 +979,44 @@ class TestConvertAnthropicToInternal:
         assert result[1]["role"] == "tool"
         assert result[1]["tool_call_id"] == "toolu_123"
         assert result[1]["content"] == "The weather is sunny"
+
+    def test_native_tool_results_follow_tool_call_order(self):
+        """Each run of tool results follows its own turn's tool_calls order."""
+
+        class NativeToolTokenizer:
+            has_tool_calling = True
+
+        def turn(call_ids, result_ids):
+            return [
+                AnthropicMessage(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(id=tid, name="read", input={})
+                        for tid in call_ids
+                    ],
+                ),
+                AnthropicMessage(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(tool_use_id=tid, content=tid.upper())
+                        for tid in result_ids
+                    ],
+                ),
+            ]
+
+        request = MessagesRequest(
+            model="claude-3",
+            max_tokens=1024,
+            messages=turn(["a", "b"], ["b", "a"]) + turn(["c", "d"], ["d", "x", "c"]),
+        )
+
+        result = convert_anthropic_to_internal(request, tokenizer=NativeToolTokenizer())
+
+        assert [
+            (msg["tool_call_id"], msg["content"])
+            for msg in result
+            if msg["role"] == "tool"
+        ] == [("a", "A"), ("b", "B"), ("c", "C"), ("d", "D"), ("x", "X")]
 
     def test_tool_result_with_image_preserve_images_nonnative(self):
         """Images in tool_result content are preserved when preserve_images=True (non-native path)."""
@@ -1259,6 +1380,28 @@ class TestConvertAnthropicToInternal:
         content = result[0]["content"]
         assert "Please read this:" in content
         assert "Doc content here" in content
+
+    @pytest.mark.parametrize(
+        "content, partial",
+        [
+            ("1, 2, 3,", True),
+            ("", False),
+            ([ContentBlockToolUse(id="toolu_1", name="count", input={})], False),
+        ],
+    )
+    def test_trailing_assistant_prefill(self, content, partial):
+        request = MessagesRequest(
+            model="claude-3",
+            max_tokens=1024,
+            messages=[
+                AnthropicMessage(role="user", content="Count from 1."),
+                AnthropicMessage(role="assistant", content=content),
+            ],
+        )
+
+        result = convert_anthropic_to_internal(request)
+
+        assert result[-1].get("partial", False) is partial
 
 
 class TestConvertAnthropicToInternalNativeReasoning:

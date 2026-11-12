@@ -107,11 +107,10 @@ def describe_ceiling_binding(
             f"(currently pinned at {fmt(dynamic)})"
         )
     elif "dynamic" in binding and static and static > dynamic:
-        headroom = max(0, dynamic - hot_cache - current)
         remedies.append(
             f"close other apps to free RAM (macOS and other apps leave oMLX "
-            f"{fmt(dynamic)} of the {fmt(static)} static cap, and oMLX already "
-            f"uses all but {fmt(headroom)} of it)"
+            f"{fmt(dynamic)} of the {fmt(static)} static cap, and oMLX itself "
+            f"uses {fmt(current + hot_cache)} of that)"
         )
         remedies.append(f"raise memory_guard_tier ({MEMORY_GUARD_TIER_LADDER})")
     elif "metal_cap" in binding:
@@ -641,3 +640,20 @@ def is_cache_corruption_error(error: Exception) -> bool:
     """
     error_str = str(error)
     return any(pattern in error_str for pattern in CACHE_CORRUPTION_PATTERNS)
+
+
+def is_metal_out_of_memory(exc: BaseException | None) -> bool:
+    """True when *exc* or an exception in its cause chain is a Metal OOM."""
+    # Track visited exceptions: a cause chain can loop (an exception raised
+    # ``from`` itself), and this runs on the event loop during a failed load.
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc)
+        if (
+            "kIOGPUCommandBufferCallbackErrorOutOfMemory" in text
+            or "Insufficient Memory" in text
+        ):
+            return True
+        exc = exc.__cause__
+    return False

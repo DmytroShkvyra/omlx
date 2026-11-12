@@ -9,6 +9,7 @@ import re
 from typing import Any, List
 
 from .openai_models import Message
+from .thinking import extract_thinking
 
 # Model families whose chat templates consume message.reasoning_content directly.
 _NATIVE_REASONING_MODEL_TYPES = {
@@ -24,6 +25,8 @@ _NATIVE_REASONING_MODEL_TYPES = {
     "muse_spark",
     # K2 requires a reasoning field for every assistant turn.
     "k2_horizon",
+    # GLM-5.3's chat template renders history reasoning_content into <think> blocks.
+    "glm5_next",
 }
 
 
@@ -89,13 +92,29 @@ def cache_reasoning_output(
     return bool(native_reasoning) or preserve_thinking is True
 
 
+_THINKING_OFF_EFFORTS = frozenset({"none", "off"})
+
+
 def merge_reasoning_effort_chat_template_kwargs(
     chat_template_kwargs: dict[str, Any] | None,
     reasoning_effort: Any | None,
 ) -> dict[str, Any] | None:
-    """Forward an API reasoning effort without overriding explicit template kwargs."""
+    """Forward an API reasoning effort without overriding explicit template kwargs.
+
+    ``none`` and ``off`` mean no reasoning in the OpenAI API, so they also set
+    the template's off switch (``enable_thinking=False``). The effort is still
+    forwarded for templates that read it directly and ignore ``enable_thinking``.
+    An explicit ``enable_thinking`` or ``reasoning_effort`` in the template
+    kwargs still wins.
+    """
     merged = dict(chat_template_kwargs or {})
     if reasoning_effort is not None:
+        if (
+            isinstance(reasoning_effort, str)
+            and reasoning_effort.strip().lower() in _THINKING_OFF_EFFORTS
+            and "reasoning_effort" not in merged
+        ):
+            merged.setdefault("enable_thinking", False)
         merged.setdefault("reasoning_effort", reasoning_effort)
     return merged or None
 
@@ -119,13 +138,16 @@ def detect_and_strip_partial(messages: list[dict]) -> bool:
     Returns:
         True if the final message is an assistant message with ``partial=True``.
     """
+    # Prompt-only VLM formats render each message to a plain string.
     is_partial = (
         bool(messages)
+        and isinstance(messages[-1], dict)
         and messages[-1].get("role") == "assistant"
         and messages[-1].get("partial", False)
     )
     for msg in messages:
-        msg.pop("partial", None)
+        if isinstance(msg, dict):
+            msg.pop("partial", None)
     return is_partial
 
 
@@ -179,8 +201,6 @@ def clean_output_text(text: str) -> str:
     if not text:
         return text
     text = SPECIAL_TOKENS_PATTERN.sub("", text)
-    from .thinking import extract_thinking
-
     _, content = extract_thinking(text)
     return content.strip()
 
@@ -924,6 +944,36 @@ def _consolidate_system_messages(messages: list[dict]) -> list[dict]:
     return [merged_system] + non_system
 
 
+def _sort_tool_messages_by_call_order(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Sort each run of tool messages into the preceding assistant's tool_calls order."""
+    ordered: list[dict[str, Any]] = []
+    call_order: dict[str, int] = {}
+    run: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        run.sort(key=lambda m: call_order.get(m.get("tool_call_id", ""), float("inf")))
+        ordered.extend(run)
+        run.clear()
+
+    for msg in messages:
+        if msg.get("role") == "tool":
+            run.append(msg)
+            continue
+        flush()
+        if msg.get("role") == "assistant":
+            call_order = {
+                call.get("id"): index
+                for index, call in enumerate(msg.get("tool_calls") or [])
+                if call.get("id")
+            }
+        ordered.append(msg)
+
+    flush()
+    return ordered
+
+
 def _merge_consecutive_roles(messages: list[dict]) -> list[dict]:
     """Merge consecutive messages with the same mergeable role.
 
@@ -999,8 +1049,6 @@ def _apply_reasoning_reconstruction(
         text = content if isinstance(content, str) else ""
         if isinstance(content, list):
             text = _extract_text_from_content_list(content)
-        from .thinking import extract_thinking
-
         inline_reasoning, inline_content = extract_thinking(text)
         if inline_reasoning:
             return inline_content, inline_reasoning
@@ -1008,6 +1056,10 @@ def _apply_reasoning_reconstruction(
     text = content if isinstance(content, str) else ""
     if isinstance(content, list):
         text = _extract_text_from_content_list(content)
+    # Clients may echo the same reasoning inline and as a field. Keep one copy.
+    inline_reasoning, inline_content = extract_thinking(text)
+    if inline_reasoning and inline_reasoning.strip() == reasoning.strip():
+        return (inline_content, reasoning) if native else (text, None)
     if native:
         return text, reasoning
     return f"<think>\n{reasoning}\n</think>\n\n{text}", None
@@ -1197,6 +1249,7 @@ def extract_text_content(
     processed_messages = _drop_void_assistant_messages(processed_messages)
     if consolidate_system_messages:
         processed_messages = _consolidate_system_messages(processed_messages)
+    processed_messages = _sort_tool_messages_by_call_order(processed_messages)
     return _merge_consecutive_roles(processed_messages)
 
 
@@ -1375,6 +1428,7 @@ def extract_multimodal_content(
     processed_messages = _drop_void_assistant_messages(processed_messages)
     if consolidate_system_messages:
         processed_messages = _consolidate_system_messages(processed_messages)
+    processed_messages = _sort_tool_messages_by_call_order(processed_messages)
     return _merge_consecutive_roles(processed_messages)
 
 
